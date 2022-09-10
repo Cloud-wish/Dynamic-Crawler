@@ -2,7 +2,7 @@
 ## 如何使用
 1. 使用Websocket客户端连接到`ws://{ws_host}:{ws_port}`
 2. 发送初始化命令，声明该连接所属的客户端名称
-3. 使用[HTTP API](https://github.com/Cloud-wish/Dynamic-Crawler/blob/master/docs/HTTP_API.md)添加所需推送
+3. 使用[HTTP API](https://github.com/Cloud-wish/Dynamic-Crawler/blob/main/docs/HTTP_API.md)添加所需推送
 4. 接收推送消息
 ## 命令格式
 

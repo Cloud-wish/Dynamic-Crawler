@@ -2,7 +2,7 @@
 ## 如何使用
 1. 进行初始化，声明客户端名称所对应的推送URL地址
 2. 使用HTTP API添加所需推送
-3. 通过URL或连接[Websocket Server](https://github.com/Cloud-wish/Dynamic-Crawler/blob/master/docs/Websocket_Server.md)接收推送消息
+3. 通过URL或连接[Websocket Server](https://github.com/Cloud-wish/Dynamic-Crawler/blob/main/docs/Websocket_Server.md)接收推送消息
 ## API列表
 ### 客户端初始化
 

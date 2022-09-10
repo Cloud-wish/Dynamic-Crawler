@@ -38,7 +38,7 @@ async def get_live():
             continue
         now_live_status = str(status_dict[live_uid]['live_status'])
         live_title = status_dict[live_uid]['title']
-        roomid = str(status_dict[live_uid]['room_id'])
+        room_id = str(status_dict[live_uid]['room_id'])
         liver_name = status_dict[live_uid]['uname']
         if(not "status" in live_user_dict[live_uid]):
             live_user_dict[live_uid]["status"] = now_live_status
@@ -64,7 +64,7 @@ async def get_live():
                     "name": liver_name,
                     "title": live_title,
                     "uid": live_uid,
-                    "roomid": roomid
+                    "room_id": room_id
                 })
                 live_user_dict[live_uid]["status"] = now_live_status
     save_live_record()

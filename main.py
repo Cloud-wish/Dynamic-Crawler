@@ -31,7 +31,7 @@ logging.basicConfig(format=LOGGER_PRINT_FORMAT)
 log_path = os.path.join(os.path.dirname(__file__), "logs", f"{LOGGER_NAME}.log")
 
 def init_logger():
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     global logger
     logger = logging.getLogger(LOGGER_NAME)
     handler = TimedRotatingFileHandler(log_path, when="midnight", interval=1, encoding="UTF-8")
@@ -188,6 +188,7 @@ def msg_sender():
     asyncio.set_event_loop(asyncio.new_event_loop())
     while True:
         msg = msg_queue.get(block = True, timeout = None)
+        msg_queue.task_done()
         msg_type = msg["type"]
         uid = msg["uid"]
         logger.debug(f"消息推送线程接收到消息：\n{jsons.dumps(msg, ensure_ascii=False)}")

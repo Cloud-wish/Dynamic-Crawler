@@ -16,7 +16,7 @@ _自动获取微博/哔哩哔哩动态/哔哩哔哩直播状态更新_
 ### Websocket Server
 [文档](https://github.com/Cloud-wish/Dynamic-Crawler/blob/main/docs/Websocket_Server.md)
 ### 示例客户端
-[client_sample.py](https://github.com/Cloud-wish/Dynamic-Crawler/blob/main/client_sample.py)
+[Dynamic-Bot](https://github.com/Cloud-wish/Dynamic-Bot)
 ## 配置
 配置文件应命名为`config.ini`，配置项参考[config_sample.ini](https://github.com/Cloud-wish/Dynamic-Crawler/blob/main/config_sample.ini)
 

@@ -13,6 +13,7 @@ import traceback
 import logging
 from logging.handlers import TimedRotatingFileHandler
 from aiohttp import web
+from aiohttp.web_request import Request
 from crawler.weibo.weibo import listen_weibo, add_wb_user, remove_wb_user, listen_weibo_user_detail
 from crawler.bili_live.bili_live import listen_live, add_live_user, remove_live_user
 from crawler.bili_dynamic.bili_dynamic import listen_dynamic, add_dyn_user, remove_dyn_user, listen_bili_user_detail
@@ -79,8 +80,9 @@ def load_config():
         with open("push_config.json", "r", encoding="UTF-8") as f:
             push_config_dict = jsons.loads(f.read())
             for typ in push_config_dict.keys():
-                for uid in push_config_dict[typ].keys():
-                    push_config_dict[typ][uid] = set(push_config_dict[typ][uid])
+                if(typ != "clients"):
+                    for uid in push_config_dict[typ].keys():
+                        push_config_dict[typ][uid] = set(push_config_dict[typ][uid])
     except:
         pass
 
@@ -88,14 +90,18 @@ def save_push_config():
     with open("push_config.json", "w", encoding="UTF-8") as f:
         f.write(jsons.dumps(push_config_dict))
 
-async def check_params(req, required_params: list[str]):
+async def check_params(req: Request, required_params: list[str]):
     if(type(req) != dict):
         try:
+            logger.debug(f"接收到的参数：{await req.text()}")
             params = await req.json()
         except:
             return (None, {"code": -1 ,"msg": "Invaild JSON Parameter"})
     else:
         params = req
+    logger.debug(f"解析后的参数：{type(params)} {params}")
+    if(type(params) != dict):
+        return (None, {"code": -1 ,"msg": "Invaild JSON Parameter"})
     for param in required_params:
         if not param in params:
             return (None, {"code": 1 ,"msg": "Missing Parameter {"+param+"}"})
@@ -275,7 +281,7 @@ async def start_tasks(app):
 async def cleanup_tasks(app):
     global ws_server
     if(not ws_server is None):
-        await ws_server.close()
+        ws_server.close()
         logger.info("Websocket服务已关闭")
 
 def main():

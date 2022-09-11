@@ -102,12 +102,13 @@ async def add_live_user(live_uid: str, config_dict: dict):
         resp = {"code": 9, "msg": "Add weibo user failed"}
     return resp
 
-async def remove_live_user(live_uid: str):
+async def remove_live_user(live_uid: str, config_dict: dict):
     global live_record_dict
+    resp = {"code": 0, "msg": "Success" }
     if(live_uid in live_record_dict["user"]):
         del live_record_dict["user"][live_uid]
         save_live_record()
-    return {"code": 0, "msg": "Success"}
+    return resp
 
 def load_live_record():
     global live_record_dict

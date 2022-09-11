@@ -186,6 +186,7 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
         async with httpx.AsyncClient() as client:
             r = await client.get(url, headers=headers, timeout=20)
     except httpx.ReadTimeout:
+        logger.info(f"微博请求超时！")
         return wb_list
     try:
         res = r.json()
@@ -199,6 +200,7 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
                 r = await client.get(url, headers=headers, timeout=20)
             res = r.json()
         except httpx.ReadTimeout:
+            logger.info(f"微博请求超时！")
             return wb_list
         except json.JSONDecodeError:
             logger.error(f"微博解析出错!返回值如下:\n{r.text}")
@@ -422,13 +424,13 @@ async def add_wb_user(wb_uid: str, config_dict: dict) -> tuple[bool, str]:
             resp = {"code": 8, "msg": "Follow weibo user failed"}
     return resp
 
-async def remove_wb_user(wb_uid: str):
+async def remove_wb_user(wb_uid: str, config_dict: dict):
     global wb_record_dict
+    resp = {"code": 0, "msg": "Success" }
     if(wb_uid in wb_record_dict["user"]):
         del wb_record_dict["user"][wb_uid]
         save_wb_record()
-        return True
-    return False
+    return resp
 
 def load_wb_record():
     global wb_record_dict

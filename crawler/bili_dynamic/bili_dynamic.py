@@ -80,21 +80,31 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
     elif dyn_typ == 1:  # 转发动态
         dyn_text = content['item']['content']
         orig_typ = content['item']['orig_type']
-        orig_content = json.loads(content['origin'])
-        orig_uname = content['origin_user']['info']['uname']
-        res = {
-            "text": dyn_text,
-            "retweet": await parse_bili_dyn_content(orig_typ, orig_content)
-        }
-        res["retweet"]["name"] = orig_uname
-        res["retweet"]["dyn_type"] = orig_typ
+        if(orig_typ in [1,2,4,8,64]):
+            orig_content = json.loads(content['origin'])
+            orig_uname = content['origin_user']['info']['uname']
+            res = {
+                "text": dyn_text,
+                "retweet": await parse_bili_dyn_content(orig_typ, orig_content)
+            }
+            res["retweet"]["name"] = orig_uname
+            res["retweet"]["dyn_type"] = orig_typ
+            res["retweet"]["is_retweet"] = True
+        else:
+            res = {
+                "text": dyn_text,
+                "retweet": {}
+            }
+            res["retweet"]["name"] = "[未知用户名]"
+            res["retweet"]["dyn_type"] = orig_typ
+            res["retweet"]["is_retweet"] = True
     return res
 
 async def parse_bili_dyn(card: dict) -> dict:
     uid = str(card['desc']['user_profile']['info']['uid'])
     uname = card['desc']['user_profile']['info']['uname']
     avatar = card['desc']['user_profile']['info']['face']
-    created_time = datetime.fromtimestamp(int(card['desc']['timestamp']))
+    created_time = card['desc']['timestamp']
     dyn_id = str(card['desc']['dynamic_id'])
     dyn_typ = card['desc']['type']
     res = {
@@ -106,13 +116,15 @@ async def parse_bili_dyn(card: dict) -> dict:
         "avatar": avatar,
         "id": dyn_id,
         "link_prefix": "https://t.bilibili.com/",
-        "created_time": int(created_time.timestamp())
+        "created_time": created_time
     }
     parse_res = await parse_bili_dyn_content(dyn_typ, json.loads(card['card']))
     for key, value in parse_res.items():
         res[key] = value
     if dyn_typ == 8:
         res["id"] = card['desc']['bvid']
+    elif dyn_typ == 1:
+        res["retweet"]["created_time"] = card["desc"]["origin"]["timestamp"]
     return res
 
 async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool):
@@ -306,13 +318,13 @@ async def add_dyn_user(dyn_uid: str, config_dict: dict) -> dict:
             resp = {"code": 7, "msg": "Follow bilibili user failed"}
     return resp
 
-async def remove_dyn_user(dyn_uid: str):
+async def remove_dyn_user(dyn_uid: str, config_dict: dict):
     global dyn_record_dict
+    resp = {"code": 0, "msg": "Success" }
     if(dyn_uid in dyn_record_dict["user"]):
         del dyn_record_dict["user"][dyn_uid]
         save_dyn_record()
-        return True
-    return False
+    return resp
 
 def load_dyn_record():
     global dyn_record_dict

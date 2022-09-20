@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import copy
 from datetime import datetime
 import os
 import logging
@@ -11,6 +12,7 @@ import json
 from bilibili_api.user import User, RelationType
 from bilibili_api.utils.Credential import Credential
 from bilibili_api.exceptions.ResponseCodeException import ResponseCodeException
+from bilibili_api.comment import ResourceType, OrderType, get_comments
 
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 dyn_record_dict = None
@@ -21,6 +23,19 @@ def link_to_https(link: str) -> str:
         if(link.startswith("http://")):
             link = "https" + link[4::]
     return link
+
+def trim_dict(data: dict[str], required_values: list[str] = None, excluded_values: list[str] = None) -> dict[str]:
+    """返回一个新的dict"""
+    res = dict()
+    if required_values and not excluded_values:
+        for key in list(data.keys()):
+            if key in required_values:
+                res[key] = data[key]
+    elif excluded_values and not required_values:
+        for key in list(data.keys()):
+            if not key in excluded_values:
+                res[key] = data[key]
+    return res
 
 def update_user(uid: str, user_dict: dict, msg_list: list, msg_type: str, subtype: str, now: str) -> bool:
     if(not subtype in user_dict[uid]):
@@ -37,6 +52,20 @@ def update_user(uid: str, user_dict: dict, msg_list: list, msg_type: str, subtyp
         user_dict[uid][subtype] = now
         return True
     return False
+
+def get_dyn_oid_type(card: dict) -> tuple(int, ResourceType):
+    dyn_type = ResourceType.DYNAMIC
+    dyn_oid = card['desc']['dynamic_id']
+    if "rid" in card["desc"]:
+        if "bvid" in card["desc"]:
+            dyn_type = ResourceType.VIDEO
+        elif "pictures" in card["card"].get("item", {}):
+            dyn_type = ResourceType.DYNAMIC_DRAW
+        elif card['desc']['type'] == 64:
+            dyn_type = ResourceType.ARTICLE
+    if dyn_type != ResourceType.DYNAMIC:
+        dyn_oid = card["desc"]["rid"]
+    return (dyn_oid, dyn_type.value)
 
 async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
     res = dict()
@@ -107,6 +136,7 @@ async def parse_bili_dyn(card: dict) -> dict:
     created_time = card['desc']['timestamp']
     dyn_id = str(card['desc']['dynamic_id'])
     dyn_typ = card['desc']['type']
+    dyn_oid, oid_type = get_dyn_oid_type(card)
     res = {
         "type": "bili_dyn",
         "subtype": "dynamic",
@@ -115,10 +145,14 @@ async def parse_bili_dyn(card: dict) -> dict:
         "name": uname,
         "avatar": avatar,
         "id": dyn_id,
+        "oid": dyn_oid,
+        "oid_type": oid_type,
         "link_prefix": "https://t.bilibili.com/",
         "created_time": created_time
     }
-    parse_res = await parse_bili_dyn_content(dyn_typ, json.loads(card['card']))
+    if type(card["card"]) == str:
+        card["card"] = json.loads(card["card"])
+    parse_res = await parse_bili_dyn_content(dyn_typ, card["card"])
     for key, value in parse_res.items():
         res[key] = value
     if dyn_typ == 8:
@@ -127,7 +161,27 @@ async def parse_bili_dyn(card: dict) -> dict:
         res["retweet"]["created_time"] = card["desc"]["origin"]["timestamp"]
     return res
 
-async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool):
+async def parse_bili_dyn_cmt(cmt: dict) -> dict:
+    user_id = str(cmt['member']['mid'])
+    user_desc = cmt['member']['sign']
+    user_name = cmt['member']['uname']
+    user_avatar = cmt['member']['avatar']
+    cmt_text = cmt['content']['message']
+    comment_id = str(cmt['rpid'])
+    created_time = int(cmt['ctime'])
+    res = {
+        "type": "bili_dyn",
+        "subtype": "comment",
+        "uid": user_id,
+        "avatar": user_avatar,
+        "id": comment_id,
+        "name": user_name,
+        "text": cmt_text,
+        "created_time": created_time
+    }
+    return res
+
+async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comment_limit: int):
     global dyn_record_dict
     dyn_list: list[dict] = []
     dyn_user_dict: dict = dyn_record_dict["user"]
@@ -177,6 +231,10 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool):
         if now_dyn_time_dict[uid] < created_time:
             now_dyn_time_dict[uid] = created_time
         dyn = await parse_bili_dyn(card)
+        if("cmt_config" in dyn_user_dict[uid]):
+            while(len(dyn_user_dict[uid]["cmt_config"]["dyn_list"]) >= comment_limit * 2):
+                dyn_user_dict[uid]["cmt_config"]["dyn_list"].pop()
+            dyn_user_dict[uid]["cmt_config"]["dyn_list"].insert(0, trim_dict(dyn, required_values=["id", "oid", "oid_type"]))
         dyn_list.append(dyn)
     for dyn_uid in now_dyn_time_dict.keys():
         dyn_user_dict[dyn_uid]["last_dyn_time"] = now_dyn_time_dict[dyn_uid]
@@ -260,12 +318,13 @@ async def listen_dynamic(dyn_config_dict: dict, msg_queue: Queue):
     bili_cookie = dyn_config_dict["cookie"]
     interval = dyn_config_dict["interval"]
     detail_enable = dyn_config_dict["detail_enable"]
+    comment_limit = dyn_config_dict["comment_limit"]
     await asyncio.sleep(1)
     logger.info("开始抓取B站动态...")
     while(True):
         logger.debug("执行抓取B站动态")
         try:
-            dyn_list = await get_dynamic(bili_ua, bili_cookie, detail_enable)
+            dyn_list = await get_dynamic(bili_ua, bili_cookie, detail_enable, comment_limit)
             logger.debug(f"获取的B站动态列表：{dyn_list}")
             if(dyn_list):
                 for dyn in dyn_list:
@@ -274,6 +333,90 @@ async def listen_dynamic(dyn_config_dict: dict, msg_queue: Queue):
             errmsg = traceback.format_exc()
             logger.error(f"B站动态抓取出错!\n{errmsg}")
         await asyncio.sleep(random.random()*15 + interval)
+
+async def get_dynamic_comment(dyn: dict, dyn_uid: str):
+    global dyn_record_dict
+    cmt_list: list[dict] = []
+    dyn_user_dict: dict = dyn_record_dict["user"]
+    last_dyn_cmt_time = dyn_user_dict[dyn_uid]["cmt_config"].get("last_dyn_cmt_time", int(datetime.now().timestamp()))
+    now_dyn_cmt_time = last_dyn_cmt_time
+    resp = await get_comments(oid=dyn["oid"], type_=ResourceType(dyn["oid_type"]), order=OrderType.LIKE)
+    comments = resp["replies"]
+    if("upper" in resp and "top" in resp["upper"] and resp["upper"]["top"]):
+        comments.append(resp["upper"]["top"])
+    if comments:
+        for comment in comments:
+            cmt = await parse_bili_dyn_cmt(comment)
+            if cmt["uid"] == dyn_uid and last_dyn_cmt_time < cmt["created_time"]:
+                if now_dyn_cmt_time < cmt["created_time"]:
+                    now_dyn_cmt_time = cmt["created_time"]
+                _cmt = copy.deepcopy(cmt)
+                _cmt["orig_dyn_id"] = dyn["id"]
+                cmt_list.append(_cmt)
+            if "replies" in comment and not comment["replies"] is None:
+                for inner_comment in comment["replies"]:
+                    inner_cmt = await parse_bili_dyn_cmt(inner_comment)
+                    if inner_cmt["uid"] == dyn_uid and last_dyn_cmt_time < inner_cmt["created_time"]:
+                        if now_dyn_cmt_time < inner_cmt["created_time"]:
+                            now_dyn_cmt_time = inner_cmt["created_time"]
+                        inner_cmt["reply"] = cmt
+                        inner_cmt["orig_dyn_id"] = dyn["id"]
+                        cmt_list.append(inner_cmt)
+        dyn_user_dict[dyn_uid]["cmt_config"]["last_dyn_cmt_time"] = now_dyn_cmt_time
+        save_dyn_record()
+    return cmt_list
+
+async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
+    global dyn_record_dict
+    load_dyn_record()
+    dyn_cookie = dyn_config_dict["cookie"]
+    dyn_ua = dyn_config_dict["ua"]
+    interval = dyn_config_dict["comment_interval"]
+    limit = dyn_config_dict["comment_limit"]
+    await asyncio.sleep(1)
+    logger.info("更新抓取评论用户的B站动态列表...")
+    uid_list = list(dyn_record_dict["user"].keys())
+    for uid in uid_list:
+        if("cmt_config" in dyn_record_dict["user"][uid] and not dyn_record_dict["user"][uid]["cmt_config"]["is_top"]):
+            logger.debug(f"执行B站用户动态列表更新\nUID：{uid}")
+            try:
+                res = await get_user_dyn_list(uid)
+                dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"] = res
+                logger.debug(f"UID:{uid}的B站用户动态列表更新成功")
+            except:
+                errmsg = traceback.format_exc()
+                logger.error(f"UID:{uid}的B站用户动态列表更新失败！错误信息：\n{errmsg}")
+            await asyncio.sleep(30)
+    logger.info("开始抓取B站动态评论...")
+    while(True):
+        uid_list = list(dyn_record_dict["user"].keys())
+        for uid in uid_list:
+            if("cmt_config" in dyn_record_dict["user"][uid]):
+                logger.debug(f"执行B站用户评论抓取\nUID：{uid}")
+                cnt = 0
+                if dyn_record_dict["user"][uid]["cmt_config"]["is_top"]:
+                    dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"] = (await get_user_dyn_list(uid, True))[0:1]
+                for dyn in dyn_record_dict["user"][uid]["cmt_config"].get("dyn_list", []):
+                    if(cnt == limit):
+                        break
+                    try:
+                        cmt_list = await get_dynamic_comment(dyn, uid)
+                        cnt += 1
+                        if(cmt_list):
+                            for cmt in cmt_list:
+                                msg_queue.put(cmt)
+                    except ResponseCodeException as e:
+                        if e.code == -404:
+                            logger.error(f"B站动态评论抓取出错！原动态可能已被删除，已从抓取列表中删除该条动态！")
+                            dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"].remove(dyn)
+                        else:
+                            errmsg = traceback.format_exc()
+                            logger.error(f"B站动态评论抓取出错！错误信息：\n{errmsg}")
+                    except:
+                        errmsg = traceback.format_exc()
+                        logger.error(f"B站动态评论抓取出错！错误信息：\n{errmsg}")
+                await asyncio.sleep(interval)
+        await asyncio.sleep(10)
 
 async def bili_follow(uid: str, config_dict: dict):
     follow_user = User(
@@ -287,6 +430,15 @@ async def bili_follow(uid: str, config_dict: dict):
     res = await follow_user.modify_relation(RelationType.SUBSCRIBE)
     logger.debug(f"B站关注用户接口返回值:{json.dumps(res, ensure_ascii=False)}")
     return True
+
+async def get_user_dyn_list(dyn_uid: str, need_top: bool = False):
+    user = User(uid=int(dyn_uid))
+    card_list = (await user.get_dynamics(need_top=need_top))["cards"]
+    dyn_list = []
+    for card in card_list:
+        dyn = await parse_bili_dyn(card)
+        dyn_list.append(trim_dict(dyn, required_values=["id", "oid", "oid_type"]))
+    return dyn_list
 
 async def add_dyn_user(dyn_uid: str, config_dict: dict) -> dict:
     global dyn_record_dict
@@ -305,7 +457,7 @@ async def add_dyn_user(dyn_uid: str, config_dict: dict) -> dict:
                     logger.error(f"B站Cookie已经过期，请更新！")
                 else:
                     logger.error(f"B站关注用户请求返回值异常！code:{e.code} msg:{e.msg}\nraw:{e.raw}")
-                resp = {"code": 7, "msg": "Follow bilibili user failed"}
+                resp = {"code": 8, "msg": "Follow bilibili user failed"}
             else:
                 logger.info(f"无需关注本账号！")
                 dyn_record_dict["user"][dyn_uid] = {
@@ -318,11 +470,43 @@ async def add_dyn_user(dyn_uid: str, config_dict: dict) -> dict:
             resp = {"code": 7, "msg": "Follow bilibili user failed"}
     return resp
 
+async def add_dyn_cmt_user(dyn_uid: str, config_dict: dict, is_top: bool = False) -> tuple[bool, str]:
+    global dyn_record_dict
+    resp = {"code": 0, "msg": "Success" }
+    if(not dyn_uid in dyn_record_dict["user"]):
+        resp = {"code": 17, "msg": "The bilibili user is not in the crawler list before"}
+    else:
+        try:
+            res = await get_user_dyn_list(dyn_uid)
+            if is_top:
+                res = []
+            cmt_config = {
+                "dyn_list": res,
+                "is_top": is_top,
+                "enable_cmt": True,
+                "last_dyn_cmt_time": int(datetime.now().timestamp())
+            }
+            dyn_record_dict["user"][dyn_uid]["cmt_config"] = cmt_config
+            save_dyn_record()
+        except:
+            errmsg = traceback.format_exc()
+            logger.error(f"B站动态添加抓取评论用户发生错误！错误信息：\n{errmsg}")
+            resp = {"code": 18, "msg": "Add bilibili dynamic comment user failed"}
+    return resp
+
 async def remove_dyn_user(dyn_uid: str, config_dict: dict):
     global dyn_record_dict
     resp = {"code": 0, "msg": "Success" }
     if(dyn_uid in dyn_record_dict["user"]):
         del dyn_record_dict["user"][dyn_uid]
+        save_dyn_record()
+    return resp
+
+async def remove_dyn_cmt_user(dyn_uid: str, config_dict: dict):
+    global dyn_record_dict
+    resp = {"code": 0, "msg": "Success" }
+    if(dyn_uid in dyn_record_dict["user"] and "cmt_config" in dyn_record_dict["user"][dyn_uid]):
+        del dyn_record_dict["user"][dyn_uid]["cmt_config"]
         save_dyn_record()
     return resp
 

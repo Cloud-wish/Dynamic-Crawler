@@ -27,7 +27,7 @@ async def get_live():
     }
     async with httpx.AsyncClient() as client:
         res = await client.post(url="https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids", json=params, headers=headers)
-    res = json.loads(res.text)
+    res = json.loads(res.content.decode(encoding="UTF-8"))
     if(res['code'] != 0):
         logger.error(f"B站直播状态请求返回值异常! code:{res['code']} msg:{res['message']}")
         return live_list
@@ -99,7 +99,7 @@ async def add_live_user(live_uid: str, config_dict: dict):
     except:
         errmsg = traceback.format_exc()
         logger.error(f"添加B站直播用户发生错误！\n{errmsg}")
-        resp = {"code": 9, "msg": "Add weibo user failed"}
+        resp = {"code": 10, "msg": "Add bilibili live user failed"}
     return resp
 
 async def remove_live_user(live_uid: str, config_dict: dict):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import collections
+import copy
 from datetime import datetime
 import json
 import os
@@ -49,44 +50,30 @@ def bracket_match(html: str):
             inQuote = not inQuote
     return html[:endPos+1]
 
-async def get_long_weibo(weibo_id, headers, is_cut: bool = False):
+async def get_long_weibo(weibo_id: str, headers: dict):
     for i in range(3):
-        url = f'https://m.weibo.cn/detail/{weibo_id}'
-        async with httpx.AsyncClient() as client:
-            html = (await client.get(url, headers = headers, timeout=5)).text
-        html = html[html.find('"status":'):]
         try:
-            html = bracket_match(html)
+            url = f'https://m.weibo.cn/detail/{weibo_id}'
+            async with httpx.AsyncClient() as client:
+                html = (await client.get(url, headers = headers, timeout=15)).text
+            html = html[html.find('"status":'):]
+            try:
+                html = bracket_match(html)
+            except:
+                html = html[:html.rfind('"call"')]
+                html = html[:html.rfind(',')]
+            html = '{' + html + '}'
+            res = jsons.loads(html, strict=False).get('status')
+            if res:
+                return res
         except:
-            html = html[:html.rfind('"call"')]
-            html = html[:html.rfind(',')]
-        html = '{' + html + '}'
-        js = jsons.loads(html, strict=False)
-        weibo_info = js.get('status')
-        if weibo_info:
-            weibo = await parse_weibo(weibo_info, headers)
-            #截短长微博
-            if(is_cut and len(weibo['text']) > 100):
-                weibo['text'] = weibo['text'][0:97] + "..."
-            return weibo
-        await asyncio.sleep(random.randint(1, 3))
+            pass
+        await asyncio.sleep(random.randint(1,3))
 
-async def parse_weibo(weibo_info, headers):
-    weibo = collections.OrderedDict()
-    if weibo_info['user']:
-        weibo['user_id'] = weibo_info['user']['id']
-        weibo['screen_name'] = weibo_info['user']['screen_name']
-    else:
-        weibo['user_id'] = ''
-        weibo['screen_name'] = ''
-
-    text_and_pics = await parse_text(weibo_info['text'], headers)
-
-    weibo['text'] = text_and_pics[0]
-
-    weibo['pics'] = get_pics(weibo_info)
-    weibo['pics'].extend(text_and_pics[1])
-    return weibo
+async def parse_weibo_content(weibo, headers):
+    text, pics = await parse_text(weibo['text'], headers)
+    pics.extend(get_pics(weibo))
+    return (text, pics)
 
 def get_pics(weibo_info) -> list:
     """ 获取微博原始图片url """
@@ -147,10 +134,7 @@ async def parse_text(wb_text, headers) -> list:
     for br in all_br:
         br.replaceWith("\n")
 
-    res = []
-    res.append(wb_soup.getText())
-    res.append(pic_list)
-    return res
+    return (wb_soup.getText(), pic_list)
 
 def update_user(uid: str, user_dict: dict, msg_list: list, msg_type: str, subtype: str, now: str) -> bool:
     if(not subtype in user_dict[uid]):
@@ -168,7 +152,70 @@ def update_user(uid: str, user_dict: dict, msg_list: list, msg_type: str, subtyp
         return True
     return False
 
-async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
+def trim_dict(data: dict[str], required_values: list[str] = None, excluded_values: list[str] = None) -> dict[str]:
+    """返回一个新的dict"""
+    res = dict()
+    if required_values and not excluded_values:
+        for key in list(data.keys()):
+            if key in required_values:
+                res[key] = data[key]
+    elif excluded_values and not required_values:
+        for key in list(data.keys()):
+            if not key in excluded_values:
+                res[key] = data[key]
+    return res
+
+async def parse_weibo(weibo: dict, headers: dict, get_long: bool = True, required_values: list[str] = None, excluded_values: list[str] = None) -> dict:
+    """required_values和excluded_values只能选择一个使用，会去除retweet中的相同字段"""
+    is_long = weibo.get('isLongText')
+    weibo_id = str(weibo['id'])
+    if is_long and get_long:
+        weibo = await get_long_weibo(weibo_id, headers)
+    retweet_weibo = weibo.get('retweeted_status')
+    weibo_mid = weibo['mid']
+    if 'user' in weibo and weibo['user']:
+        user_desc = weibo['user'].get('description')
+        uid = str(weibo['user']['id']) # 获取到的是int
+        user_name = weibo['user'].get('screen_name')
+        user_avatar = weibo['user'].get('avatar_hd')
+        if user_avatar:
+            user_avatar = link_to_https(user_avatar) # 转换
+    else:
+        user_desc = uid = user_name = user_avatar = None
+    created_time = int(get_created_time(weibo['created_at']).timestamp())
+    text, pics = await parse_weibo_content(weibo, headers)
+    if retweet_weibo and retweet_weibo.get('id'): # 转发
+        retweet_id = str(retweet_weibo['id'])
+        retweet_weibo = await parse_weibo(retweet_weibo, headers, get_long)
+    res = {
+        "type": "weibo",
+        "subtype": "weibo",
+        "uid": uid,
+        "id": weibo_id,
+        "mid": weibo_mid,
+        "name": user_name,
+        "avatar": user_avatar,
+        "text": text,
+        "pics": pics,
+        "created_time": created_time,
+    }
+    if retweet_weibo:
+        res["retweet"] = retweet_weibo
+    if required_values and not excluded_values:
+        res = trim_dict(res, required_values=required_values + ["retweet"])
+        if "retweet" in res:
+            if not "retweet" in required_values:
+                del res["retweet"]
+            else:
+                res["retweet"] = trim_dict(res["retweet"], required_values=required_values)
+    elif excluded_values and not required_values:
+        res = trim_dict(res, excluded_values=excluded_values)
+        if "retweet" in res:
+            if not "retweet" in excluded_values:
+                res["retweet"] = trim_dict(res["retweet"], excluded_values=excluded_values)
+    return res
+
+async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_limit: int):
     global wb_record_dict
     wb_list: list[dict] = []
     wb_user_dict: dict = wb_record_dict["user"]
@@ -190,7 +237,7 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
         return wb_list
     try:
         res = r.json()
-    except json.JSONDecodeError:
+    except json.decoder.JSONDecodeError:
         try:
             url_start = r.text.find("https://m.weibo.cn/feed/friends")
             url_end = r.text.find('"', url_start)
@@ -202,7 +249,7 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
         except httpx.ReadTimeout:
             logger.info(f"微博请求超时！")
             return wb_list
-        except json.JSONDecodeError:
+        except json.decoder.JSONDecodeError:
             logger.error(f"微博解析出错!返回值如下:\n{r.text}")
             return wb_list
     if res['ok']:
@@ -212,17 +259,12 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
             now_wb_time_dict[wb_uid] = wb_user_dict[wb_uid]["last_wb_time"]
         for i in range(len(weibos)):
             w = weibos[i]
-            retweeted_status = w.get('retweeted_status')
-            is_long = w.get('isLongText')
-            weibo_id = str(w['id'])
-            mid = w['mid']
             # 获取用户简介
             user_desc = w['user']['description']
             uid = str(w['user']['id']) # 获取到的是int
             user_name = w['user']['screen_name']
             user_avatar = w['user']['avatar_hd']
             created_time = int(get_created_time(w['created_at']).timestamp())
-
             user_avatar = link_to_https(user_avatar) # 转换
             # 判断是否在抓取列表中
             if not (uid in wb_user_dict):
@@ -237,54 +279,12 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool):
             # 以下是处理新微博的内容
             if now_wb_time_dict[uid] < created_time:
                 now_wb_time_dict[uid] = created_time
-            is_retweet = False
-            if retweeted_status and retweeted_status.get('id'): # 转发
-                is_retweet = True
-                retweet_id = str(retweeted_status['id'])
-                retweet_user = retweeted_status['user']
-                is_long_retweet = retweeted_status.get('isLongText')
-                if is_long:
-                    weibo = await get_long_weibo(weibo_id, headers)
-                    if not weibo:
-                        weibo = await parse_weibo(w, headers)
-                else:
-                    weibo = await parse_weibo(w, headers)
-                if is_long_retweet:
-                    retweet = await get_long_weibo(retweet_id, headers)
-                    if not retweet:
-                        retweet = await parse_weibo(retweeted_status, headers)
-                else:
-                    retweet = await parse_weibo(retweeted_status, headers)
-                weibo['retweet'] = retweet
-            else:  # 原创
-                if is_long:
-                    weibo = await get_long_weibo(weibo_id, headers)
-                    if not weibo:
-                        weibo = await parse_weibo(w, headers)
-                else:
-                    weibo = await parse_weibo(w, headers)
-            wb = {
-                "type": "weibo",
-                "subtype": "weibo",
-                "uid": uid,
-                "id": weibo_id,
-                "name": user_name,
-                "avatar": user_avatar,
-                "text": weibo["text"],
-                "pics": weibo["pics"],
-                "created_time": created_time,
-            }
-            if(is_retweet):
-                wb["retweet"] = {
-                    "uid": str(retweet_user["id"]),
-                    "id": retweet_id,
-                    "name": retweet_user["screen_name"],
-                    "avatar": retweet_user["avatar_hd"],
-                    "text": weibo["retweet"]["text"],
-                    "pics": weibo["retweet"]["pics"],
-                    "created_time": int(get_created_time(retweeted_status['created_at']).timestamp())
-                }
-            wb_list.append(wb)
+            weibo = await parse_weibo(w, headers)
+            if("cmt_config" in wb_user_dict[uid]):
+                while(len(wb_user_dict[uid]["cmt_config"]["wb_list"]) >= comment_limit * 2):
+                    wb_user_dict[uid]["cmt_config"]["wb_list"].pop()
+                wb_user_dict[uid]["cmt_config"]["wb_list"].insert(0, trim_dict(weibo, required_values=["id", "mid"]))
+            wb_list.append(weibo)
         for uid in now_wb_time_dict.keys():
             wb_user_dict[uid]["last_wb_time"] = now_wb_time_dict[uid]
         save_wb_record()
@@ -300,12 +300,13 @@ async def listen_weibo(wb_config_dict: dict, msg_queue: Queue):
     wb_ua = wb_config_dict["ua"]
     interval = wb_config_dict["interval"]
     detail_enable = wb_config_dict["detail_enable"]
+    comment_limit = wb_config_dict["comment_limit"]
     await asyncio.sleep(1)
     logger.info("开始抓取微博...")
     while(True):
         logger.debug("执行抓取微博")
         try:
-            wb_list = await get_weibo(wb_cookie, wb_ua, detail_enable)
+            wb_list = await get_weibo(wb_cookie, wb_ua, detail_enable, comment_limit)
             logger.debug(f"获取的微博列表：{wb_list}")
             if(wb_list):
                 for wb in wb_list:
@@ -351,7 +352,7 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
     load_wb_record()
     wb_cookie = wb_config_dict["cookie"]
     wb_ua = wb_config_dict["ua"]
-    interval = wb_config_dict["interval"]
+    interval = wb_config_dict["detail_interval"]
     while(True):
         uid_list = list(wb_record_dict["user"].keys())
         for uid in uid_list:
@@ -365,6 +366,153 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
                 except:
                     errmsg = traceback.format_exc()
                     logger.error(f"微博用户信息抓取出错!\n{errmsg}")
+                await asyncio.sleep(interval)
+        await asyncio.sleep(10)
+
+async def parse_comment(comment: dict, headers: dict) -> dict:
+    comment_id = str(comment['id'])
+    created_time = int(get_created_time(comment['created_at']).timestamp())
+    text, pics = await parse_text(comment['text'], headers)
+    if comment.get('pic'):
+        pics.append(comment['pic']['large']['url'])
+    uid = str(comment['user']['id'])
+    user_name = comment['user']['screen_name']
+    user_avatar = comment['user']['avatar_hd']
+    user_avatar = link_to_https(user_avatar) # 转换
+    res = {
+        "type": "weibo",
+        "subtype": "comment",
+        "uid": uid,
+        "id": comment_id,
+        "name": user_name,
+        "avatar": user_avatar,
+        "text": text,
+        "pics": pics,
+        "created_time": created_time,
+    }
+    return res
+
+async def get_weibo_comment(weibo_ua: str, weibo_cookie: str, weibo: dict, wb_uid: str) -> tuple[int, list]:
+    global wb_record_dict
+    cmt_list: list[dict] = []
+    wb_user_dict: dict = wb_record_dict["user"]
+    last_wb_cmt_time = wb_user_dict[wb_uid]["cmt_config"].get("last_wb_cmt_time", int(datetime.now().timestamp()))
+    now_wb_cmt_time = last_wb_cmt_time
+    headers = {
+        "User-Agent": weibo_ua,
+        "Cookie": weibo_cookie
+    }
+    url = 'https://m.weibo.cn/comments/hotflow?'
+    params = {
+        'id': weibo["id"],
+        'mid': weibo["mid"],
+        'max_id_type': '0'
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.get(url, params=params, headers=headers, timeout=15)
+        res = r.json()
+    except json.decoder.JSONDecodeError as e:
+        try:
+            logger.debug(f"微博评论解析出错，尝试跳转")
+            url_start = r.text.find("https://m.weibo.cn/comments/hotflow?")
+            url_end = r.text.find('"', url_start)
+            # print(url_start, url_end)
+            logger.debug(f"获取到的跳转地址：{r.text[url_start:url_end]}")
+            if(not r.text[url_start:url_end].startswith("http://") and not r.text[url_start:url_end].startswith("https://")):
+                logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
+                return (0, cmt_list)
+            async with httpx.AsyncClient() as client:
+                r = await client.get(r.text[url_start:url_end], params=params, headers=headers, timeout=15)
+            res = r.json()
+        except json.decoder.JSONDecodeError as e:
+            logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
+            return (0, cmt_list)
+    if res['ok']: # ok为0是没有评论
+        comments = res['data']['data']
+        if comments:
+            for comment in comments:
+                created_time = int(get_created_time(comment['created_at']).timestamp())
+                comment_id = str(comment['id'])
+                comment_uid = str(comment['user']['id'])
+                cmt = await parse_comment(comment, headers)
+                if comment_uid == wb_uid and last_wb_cmt_time < created_time:
+                    if now_wb_cmt_time < created_time:
+                        now_wb_cmt_time = created_time
+                    _cmt = copy.deepcopy(cmt)
+                    _cmt["orig_weibo_id"] = weibo["id"]
+                    cmt_list.append(_cmt)
+                if comment['comments']: # 是否存在楼中楼
+                    for inner_comment in comment['comments']:
+                        # print(inner_comment)
+                        inner_created_time = int(get_created_time(inner_comment['created_at']).timestamp())
+                        inner_comment_id = str(inner_comment['id'])
+                        inner_comment_uid = str(inner_comment['user']['id'])
+                        if inner_comment_uid == wb_uid and last_wb_cmt_time < inner_created_time:
+                            inner_cmt = await parse_comment(inner_comment, headers)
+                            inner_cmt["reply"] = cmt
+                            inner_cmt["orig_weibo_id"] = weibo["id"]
+                            if now_wb_cmt_time < inner_created_time:
+                                now_wb_cmt_time = inner_created_time
+                            cmt_list.append(inner_cmt)
+            wb_user_dict[wb_uid]["cmt_config"]["last_wb_cmt_time"] = now_wb_cmt_time
+            save_wb_record()
+    elif("msg" in res):
+        if(not res["msg"] == "快来发表你的评论吧"):
+            logger.debug(f"微博评论请求返回值异常！\nmsg:{res['msg']}")
+    else:
+        logger.error(f"微博评论请求返回值异常！微博ID：{weibo['id']}\n返回值:{json.dumps(res, ensure_ascii=False)}")
+        return (-1, cmt_list)
+    cmt_list.reverse()
+    return (0, cmt_list)
+
+async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
+    global wb_record_dict
+    load_wb_record()
+    wb_cookie = wb_config_dict["cookie"]
+    wb_ua = wb_config_dict["ua"]
+    interval = wb_config_dict["comment_interval"]
+    limit = wb_config_dict["comment_limit"]
+    await asyncio.sleep(1)
+    logger.info("更新抓取评论用户的微博列表...")
+    uid_list = list(wb_record_dict["user"].keys())
+    for uid in uid_list:
+        if("cmt_config" in wb_record_dict["user"][uid]):
+            logger.debug(f"执行微博用户微博列表更新\nUID：{uid}")
+            try:
+                res = await get_user_wb_list(wb_cookie, wb_ua, uid)
+                if res["ok"]:
+                    wb_record_dict["user"][uid]["cmt_config"]["wb_list"] = res["wb_list"]
+                    logger.debug(f"UID:{uid}的微博用户微博列表更新成功")
+                else:
+                    logger.error(f"UID:{uid}的微博用户微博列表更新失败！")
+            except:
+                errmsg = traceback.format_exc()
+                logger.error(f"UID:{uid}的微博用户微博列表更新失败！错误信息：\n{errmsg}")
+            await asyncio.sleep(30)
+    logger.info("开始抓取微博评论...")
+    while(True):
+        uid_list = list(wb_record_dict["user"].keys())
+        for uid in uid_list:
+            if("cmt_config" in wb_record_dict["user"][uid]):
+                logger.debug(f"执行微博用户评论抓取\nUID：{uid}")
+                cnt = 0
+                for weibo in wb_record_dict["user"][uid]["cmt_config"].get("wb_list", []):
+                    if(cnt == limit):
+                        break
+                    try:
+                        code, cmt_list = await get_weibo_comment(wb_ua, wb_cookie, weibo, uid)
+                        if(code < 0):
+                            logger.error(f"微博评论抓取出错！原微博可能已被删除或不可见，已从抓取列表中删除该条微博！")
+                            wb_record_dict["user"][uid]["cmt_config"]["wb_list"].remove(weibo)
+                            continue
+                        cnt += 1
+                        if(cmt_list):
+                            for cmt in cmt_list:
+                                msg_queue.put(cmt)
+                    except:
+                        errmsg = traceback.format_exc()
+                        logger.error(f"微博评论抓取出错！错误信息：\n{errmsg}")
                 await asyncio.sleep(interval)
         await asyncio.sleep(10)
 
@@ -396,6 +544,34 @@ async def wb_follow(uid: str, config_dict: dict):
         logger.debug(f"微博关注用户接口返回值:{json.dumps(res, ensure_ascii=False)}")
         return res
 
+async def get_user_wb_list(wb_cookie: str, wb_ua: str, wb_uid: str) -> list[dict]:
+    def wb_time_key(weibo) -> int:
+        return int(get_created_time(weibo['created_at']).timestamp())
+    headers = {
+        'Cookie': wb_cookie,
+        'User-Agent': wb_ua,
+        'DNT': "1",
+        'MWeibo-Pwa': "1",
+        'Referer': 'https://m.weibo.cn/'
+    }
+    url = f'https://m.weibo.cn/api/container/getIndex?containerid=107603{wb_uid}'
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url, headers=headers, timeout=20)
+    res = r.json()
+    wb_list = []
+    if res['ok']:
+        weibos = []
+        for w in res['data']['cards']:
+            if w["card_type"] == 9:
+                weibos.append(w["mblog"])
+        weibos.sort(key=wb_time_key, reverse=True)
+        for weibo in weibos:
+            weibo_typ = weibo['mblogtype'] # 0=普通 1=热门 2=置顶（推测）
+            wb_list.append(await parse_weibo(weibo, headers, get_long = False, required_values=["id", "mid"]))
+    else:
+        logger.error(f"未成功获取UID：{wb_uid}用户的微博列表！返回值：\n{json.dumps(res, ensure_ascii=False)}")
+    return {"ok": res['ok'], "wb_list": wb_list}
+
 async def add_wb_user(wb_uid: str, config_dict: dict) -> tuple[bool, str]:
     global wb_record_dict
     resp = {"code": 0, "msg": "Success" }
@@ -405,7 +581,7 @@ async def add_wb_user(wb_uid: str, config_dict: dict) -> tuple[bool, str]:
             if(res["ok"] == 0):
                 if(str(res['errno']) != "20504"):
                     logger.error(f"微博关注用户请求返回值异常！errno:{res['errno']} msg:{res['msg']}")
-                    resp = {"code": 8, "msg": "Follow weibo user failed"}
+                    resp = {"code": 9, "msg": "Follow weibo user failed"}
                 else:
                     logger.info(f"无需关注本账号！")
                     wb_record_dict["user"][wb_uid] = {
@@ -424,11 +600,45 @@ async def add_wb_user(wb_uid: str, config_dict: dict) -> tuple[bool, str]:
             resp = {"code": 8, "msg": "Follow weibo user failed"}
     return resp
 
+async def add_wb_cmt_user(wb_uid: str, config_dict: dict) -> tuple[bool, str]:
+    global wb_record_dict
+    resp = {"code": 0, "msg": "Success" }
+    if(not wb_uid in wb_record_dict["user"]):
+        resp = {"code": 15, "msg": "The weibo user is not in the crawler list before"}
+    else:
+        wb_cookie = config_dict["cookie"]
+        wb_ua = config_dict["ua"]
+        try:
+            res = await get_user_wb_list(wb_cookie, wb_ua, wb_uid)
+            if res["ok"]:
+                cmt_config = {
+                    "wb_list": res["wb_list"],
+                    "enable_cmt": True,
+                    "last_wb_cmt_time": int(datetime.now().timestamp())
+                }
+                wb_record_dict["user"][wb_uid]["cmt_config"] = cmt_config
+                save_wb_record()
+            else:
+                resp = {"code": 16, "msg": "Add weibo comment user failed"}
+        except:
+            errmsg = traceback.format_exc()
+            logger.error(f"微博添加抓取评论用户发生错误！错误信息：\n{errmsg}")
+            resp = {"code": 16, "msg": "Add weibo comment user failed"}
+    return resp
+
 async def remove_wb_user(wb_uid: str, config_dict: dict):
     global wb_record_dict
     resp = {"code": 0, "msg": "Success" }
     if(wb_uid in wb_record_dict["user"]):
         del wb_record_dict["user"][wb_uid]
+        save_wb_record()
+    return resp
+
+async def remove_wb_cmt_user(wb_uid: str, config_dict: dict):
+    global wb_record_dict
+    resp = {"code": 0, "msg": "Success" }
+    if(wb_uid in wb_record_dict["user"] and "cmt_config" in wb_record_dict["user"][wb_uid]):
+        del wb_record_dict["user"][wb_uid]["cmt_config"]
         save_wb_record()
     return resp
 

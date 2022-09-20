@@ -14,9 +14,9 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from aiohttp import web
 from aiohttp.web_request import Request
-from crawler.weibo.weibo import listen_weibo, add_wb_user, remove_wb_user, listen_weibo_user_detail
+from crawler.weibo.weibo import listen_weibo, add_wb_user, add_wb_cmt_user, remove_wb_user, remove_wb_cmt_user, listen_weibo_user_detail, listen_weibo_comment
 from crawler.bili_live.bili_live import listen_live, add_live_user, remove_live_user
-from crawler.bili_dynamic.bili_dynamic import listen_dynamic, add_dyn_user, remove_dyn_user, listen_bili_user_detail
+from crawler.bili_dynamic.bili_dynamic import listen_dynamic, add_dyn_user, add_dyn_cmt_user, remove_dyn_user, remove_dyn_cmt_user, listen_bili_user_detail, listen_dynamic_comment
 
 routes = web.RouteTableDef()
 msg_queue = queue.Queue(maxsize=-1) # infinity length
@@ -80,9 +80,18 @@ def load_config():
         with open("push_config.json", "r", encoding="UTF-8") as f:
             push_config_dict = jsons.loads(f.read())
             for typ in push_config_dict.keys():
-                if(typ != "clients"):
-                    for uid in push_config_dict[typ].keys():
-                        push_config_dict[typ][uid] = set(push_config_dict[typ][uid])
+                if(typ == "clients"):
+                    continue
+                if(type(push_config_dict[typ]) == dict):
+                    for x in push_config_dict[typ].keys():
+                        if(type(push_config_dict[typ][x]) == dict):
+                            for uid in push_config_dict[typ][x].keys():
+                                push_config_dict[typ][x][uid] = set(push_config_dict[typ][x][uid])
+                        else:
+                            push_config_dict[typ][x] = set(push_config_dict[typ][x])
+                else:
+                    push_config_dict[typ] = set(push_config_dict[typ])
+        print(push_config_dict)
     except:
         pass
 
@@ -129,6 +138,10 @@ async def add(req):
     if(not params is None):
         typ: str = params["type"]
         uid: str = params["uid"]
+        subtype: str = params.get("subtype", None)
+        is_top: bool = params.get("is_top", False)
+        if subtype and subtype == typ:
+            subtype = None
         client_name: str = params["client_name"]
         if not uid.isdigit():
             resp = {"code": 2, "msg": "Invalid UID"}
@@ -136,12 +149,32 @@ async def add(req):
             resp = {"code": 3, "msg": "Invalid type"}
         elif not config_dict[typ]["enable"]:
             resp = {"code": 4, "msg": "This type of crawler is not enabled"}
+        elif subtype and not config_dict[typ].get(f"{subtype}_enable", False):
+            resp = {"code": 5, "msg": "This subtype of crawler is not enabled"}
         elif not "clients" in push_config_dict or not client_name in push_config_dict["clients"]:
-            resp = {"code": 5, "msg": "Client is not initialized"}
+            resp = {"code": 6, "msg": "Client is not initialized"}
         else:
             if not typ in push_config_dict:
                 push_config_dict[typ] = dict()
-            if not uid in push_config_dict[typ]:
+            if subtype:
+                if not uid in push_config_dict[typ]:
+                    resp = {"code": 15, "msg": "The user is not in the crawler list before"}
+                else:
+                    if not subtype in push_config_dict[typ]:
+                        push_config_dict[typ][subtype] = dict()
+                    if not uid in push_config_dict[typ][subtype]:
+                        if(typ == "weibo"):
+                            if(subtype == "comment"):
+                                resp = await add_wb_cmt_user(uid, config_dict[typ])
+                        elif(typ == "bili_dyn"):
+                            if(subtype == "comment"):
+                                resp = await add_dyn_cmt_user(uid, config_dict[typ], is_top)
+                        if(resp['code'] == 0):
+                            push_config_dict[typ][subtype][uid] = set()
+                            push_config_dict[typ][subtype][uid].add(client_name)
+                    else:
+                        push_config_dict[typ][subtype][uid].add(client_name)
+            elif not uid in push_config_dict[typ]:
                 if(typ == "weibo"):
                     resp = await add_wb_user(uid, config_dict[typ])
                 elif(typ == "bili_dyn"):
@@ -165,19 +198,37 @@ async def remove(req):
         typ: str = params["type"]
         uid: str = params["uid"]
         client_name: str = params["client_name"]
+        subtype: str = params.get("subtype", None)
+        if subtype and subtype == typ:
+            subtype = None
         if not uid.isdigit():
             resp = {"code": 2, "msg": "Invalid UID"}
         elif not typ in config_dict:
             resp = {"code": 3, "msg": "Invalid type"}
         elif not config_dict[typ]["enable"]:
             resp = {"code": 4, "msg": "This type of crawler is not enabled"}
+        elif subtype and not config_dict[typ].get(f"{subtype}_enable", False):
+            resp = {"code": 5, "msg": "This subtype of crawler is not enabled"}
         elif not "clients" in push_config_dict or not client_name in push_config_dict["clients"]:
-            resp = {"code": 5, "msg": "Client is not initialized"}
+            resp = {"code": 6, "msg": "Client is not initialized"}
         elif not typ in push_config_dict or not uid in push_config_dict[typ]:
-            resp = {"code": 6, "msg": "Invalid user"}
+            resp = {"code": 7, "msg": "Invalid user"}
+        elif subtype and (not subtype in push_config_dict[typ] or not uid in push_config_dict[typ][subtype]):
+            resp = {"code": 7, "msg": "Invalid user"}
+        elif subtype and client_name in push_config_dict[typ][subtype][uid]:
+            if(len(push_config_dict[typ][subtype][uid]) == 1):
+                if(typ == "weibo"):
+                    if(subtype == "comment"):
+                        resp = await remove_wb_cmt_user(uid, config_dict[typ])
+                elif(typ == "bili_dyn"):
+                    if(subtype == "comment"):
+                        resp = await remove_dyn_cmt_user(uid, config_dict[typ])
+                if(resp['code'] == 0):
+                    del push_config_dict[typ][subtype][uid]
+            else:
+                push_config_dict[typ][subtype][uid].remove(client_name)
         elif client_name in push_config_dict[typ][uid]:
-            push_config_dict[typ][uid].remove(client_name)
-            if(len(push_config_dict[typ][uid]) == 0):
+            if(len(push_config_dict[typ][uid]) == 1):
                 if(typ == "weibo"):
                     resp = await remove_wb_user(uid, config_dict[typ])
                 elif(typ == "bili_dyn"):
@@ -186,6 +237,8 @@ async def remove(req):
                     resp = await remove_live_user(uid, config_dict[typ])
                 if(resp['code'] == 0):
                     del push_config_dict[typ][uid]
+            else:
+                push_config_dict[typ][uid].remove(client_name)
             save_push_config()
         logger.debug(f"HTTP服务收到remove命令\nparams:{jsons.dumps(params, ensure_ascii=False)}\nresp:{jsons.dumps(resp, ensure_ascii=False)}")
     return web.json_response(resp)
@@ -230,9 +283,9 @@ async def receiver(websocket):
                 cmd_type = params["type"]
                 if(cmd_type == "init"):
                     if(not client_name is None):
-                        resp = {"code": 10, "msg": "Duplicate websocket initialization"}
+                        resp = {"code": 11, "msg": "Duplicate websocket initialization"}
                     elif(_client_name in ws_conn_dict and ws_conn_dict[_client_name].open):
-                        resp = {"code": 11, "msg": "Client name already exists"}
+                        resp = {"code": 12, "msg": "Client name already exists"}
                     else:
                         client_name = _client_name
                         ws_conn_dict[client_name] = websocket
@@ -242,13 +295,13 @@ async def receiver(websocket):
                         save_push_config()
                 elif(cmd_type == "exit"):
                     if(client_name is None):
-                        resp = {"code": 12, "msg": "Not initialized"}
+                        resp = {"code": 13, "msg": "Not initialized"}
                     else:
                         del ws_conn_dict[client_name]
                         await websocket.close()
                         return
                 else:
-                    resp = {"code": 13, "msg": "Illegal command type"}
+                    resp = {"code": 14, "msg": "Illegal command type"}
                 logger.debug(f"Websocket服务收到{cmd_type}命令\nparams:{jsons.dumps(params, ensure_ascii=False)}\nresp:{jsons.dumps(resp, ensure_ascii=False)}")
             await websocket.send(jsons.dumps(resp))
     except websockets.exceptions.ConnectionClosedOK:
@@ -269,10 +322,14 @@ async def start_tasks(app):
         app["bili_dyn_listener"] = asyncio.create_task(listen_dynamic(config_dict["bili_dyn"], msg_queue))
         if(config_dict["bili_dyn"]["detail_enable"]):
             app["bili_dyn_detail_listener"] = asyncio.create_task(listen_bili_user_detail(config_dict["bili_dyn"], msg_queue))
+        if(config_dict["bili_dyn"]["comment_enable"]):
+            app["bili_dyn_comment_listener"] = asyncio.create_task(listen_dynamic_comment(config_dict["bili_dyn"], msg_queue))
     if(config_dict["weibo"]["enable"]):
         app["weibo_listener"] = asyncio.create_task(listen_weibo(config_dict["weibo"], msg_queue))
         if(config_dict["weibo"]["detail_enable"]):
             app["weibo_detail_listener"] = asyncio.create_task(listen_weibo_user_detail(config_dict["weibo"], msg_queue))
+        if(config_dict["weibo"]["comment_enable"]):
+            app["weibo_comment_listener"] = asyncio.create_task(listen_weibo_comment(config_dict["weibo"], msg_queue))
     if(config_dict["websocket"]["enable"]):
         global ws_server
         ws_server = await websockets.serve(receiver, config_dict["websocket"]["host"], config_dict["websocket"]["port"])

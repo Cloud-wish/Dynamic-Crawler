@@ -130,6 +130,8 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
     return res
 
 async def parse_bili_dyn(card: dict) -> dict:
+    if type(card["card"]) == str:
+        card["card"] = json.loads(card["card"])
     uid = str(card['desc']['user_profile']['info']['uid'])
     uname = card['desc']['user_profile']['info']['uname']
     avatar = card['desc']['user_profile']['info']['face']
@@ -150,8 +152,6 @@ async def parse_bili_dyn(card: dict) -> dict:
         "link_prefix": "https://t.bilibili.com/",
         "created_time": created_time
     }
-    if type(card["card"]) == str:
-        card["card"] = json.loads(card["card"])
     parse_res = await parse_bili_dyn_content(dyn_typ, card["card"])
     for key, value in parse_res.items():
         res[key] = value

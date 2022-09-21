@@ -121,6 +121,8 @@ async def parse_text(wb_text, headers) -> list:
                     a.extract()
                 else:
                     pic_link = a.getText()
+                    if not (pic_link.startswith("[") and pic_link.endswith("[")):
+                        pic_link = "【"+pic_link+"】"
                     a.replaceWith(pic_link)
 
     all_img = wb_soup.findAll('img')
@@ -463,7 +465,7 @@ async def get_weibo_comment(weibo_ua: str, weibo_cookie: str, weibo: dict, wb_ui
     else:
         logger.error(f"微博评论请求返回值异常！微博ID：{weibo['id']}\n返回值:{json.dumps(res, ensure_ascii=False)}")
         return (-1, cmt_list)
-    cmt_list.reverse()
+    # cmt_list.reverse()
     return (0, cmt_list)
 
 async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):

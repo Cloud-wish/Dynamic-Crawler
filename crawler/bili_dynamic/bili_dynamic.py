@@ -112,11 +112,13 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
         if(orig_typ in [1,2,4,8,64]):
             orig_content = json.loads(content['origin'])
             orig_uname = content['origin_user']['info']['uname']
+            orig_uid = str(content['origin_user']['info']['uid'])
             res = {
                 "text": dyn_text,
                 "retweet": await parse_bili_dyn_content(orig_typ, orig_content)
             }
             res["retweet"]["name"] = orig_uname
+            res["retweet"]["uid"] = orig_uid
             res["retweet"]["dyn_type"] = orig_typ
             res["retweet"]["is_retweet"] = True
         else:
@@ -125,6 +127,7 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
                 "retweet": {}
             }
             res["retweet"]["name"] = "[未知用户名]"
+            res["retweet"]["uid"] = "unknown"
             res["retweet"]["dyn_type"] = orig_typ
             res["retweet"]["is_retweet"] = True
     return res

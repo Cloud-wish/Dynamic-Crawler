@@ -121,7 +121,7 @@ async def parse_text(wb_text, headers) -> list:
                     a.extract()
                 else:
                     pic_link = a.getText()
-                    if not (pic_link.startswith("[") and pic_link.endswith("[")):
+                    if not ((pic_link.startswith("[") and pic_link.endswith("[")) or pic_link.startswith("@") or (pic_link.startswith("#") and pic_link.endswith("#"))):
                         pic_link = "【"+pic_link+"】"
                     a.replaceWith(pic_link)
 
@@ -252,7 +252,11 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
             logger.info(f"微博请求超时！")
             return wb_list
         except json.decoder.JSONDecodeError:
-            logger.error(f"微博解析出错!返回值如下:\n{r.text}")
+            try:
+                bs = BeautifulSoup(res.text, features="lxml")
+                logger.error(f"微博解析出错!返回值如下:\n{bs.find('body').text.strip()}")
+            except:
+                logger.error(f"微博解析出错!返回值如下:\n{r.text}")
             return wb_list
     if res['ok']:
         weibos = res['data']['statuses']
@@ -422,13 +426,21 @@ async def get_weibo_comment(weibo_ua: str, weibo_cookie: str, weibo: dict, wb_ui
             # print(url_start, url_end)
             logger.debug(f"获取到的跳转地址：{r.text[url_start:url_end]}")
             if(not r.text[url_start:url_end].startswith("http://") and not r.text[url_start:url_end].startswith("https://")):
-                logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
+                try:
+                    bs = BeautifulSoup(r.text, features="lxml")
+                    logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下:\n{bs.find('body').text.strip()}")
+                except:
+                    logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
                 return (0, cmt_list)
             async with httpx.AsyncClient() as client:
                 r = await client.get(r.text[url_start:url_end], params=params, headers=headers, timeout=15)
             res = r.json()
         except json.decoder.JSONDecodeError as e:
-            logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
+            try:
+                bs = BeautifulSoup(r.text, features="lxml")
+                logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下:\n{bs.find('body').text}")
+            except:
+                logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
             return (0, cmt_list)
     if res['ok']: # ok为0是没有评论
         comments = res['data']['data']
@@ -499,6 +511,17 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
             if("cmt_config" in wb_record_dict["user"][uid]):
                 logger.debug(f"执行微博用户评论抓取\nUID：{uid}")
                 cnt = 0
+                if(datetime.now().timestamp() - wb_record_dict["user"][uid].get("update_time", 0) > 60):
+                    logger.debug(f"执行微博用户详情更新\nUID：{uid}")
+                    try:
+                        msg_list = await get_weibo_user_detail(wb_ua, wb_cookie, uid)
+                        if(msg_list):
+                            for msg in msg_list:
+                                msg_queue.put(msg)
+                    except:
+                        errmsg = traceback.format_exc()
+                        logger.error(f"微博用户信息抓取出错!\n{errmsg}")
+                    await asyncio.sleep(5)
                 for weibo in wb_record_dict["user"][uid]["cmt_config"].get("wb_list", []):
                     if(cnt == limit):
                         break

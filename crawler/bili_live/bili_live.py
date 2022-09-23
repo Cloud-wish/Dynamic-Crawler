@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import copy
 from datetime import datetime
 import os
 from queue import Queue
@@ -12,6 +13,15 @@ import logging
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 live_record_dict = None
 logger = logging.getLogger("crawler")
+
+def update_record(msg_list: list, record_dict: dict, subtype: str, now, data):
+    if subtype in record_dict and record_dict[subtype] != now:
+        _data = copy.deepcopy(data)
+        _data["subtype"] = subtype
+        _data["pre"] = record_dict[subtype]
+        _data["now"] = now
+        msg_list.append(_data)
+    record_dict[subtype] = now
 
 async def get_live():
     global live_record_dict
@@ -40,33 +50,18 @@ async def get_live():
         live_title = status_dict[live_uid]['title']
         room_id = str(status_dict[live_uid]['room_id'])
         liver_name = status_dict[live_uid]['uname']
-        if(not "status" in live_user_dict[live_uid]):
-            live_user_dict[live_uid]["status"] = now_live_status
-            live_user_dict[live_uid]["title"] = live_title
-            live_user_dict[live_uid]["name"] = liver_name
-        else:
-            if(live_user_dict[live_uid]["title"] != live_title):
-                live_list.append({
-                    "type": "bili_live",
-                    "subtype": "title",
-                    "pre": live_user_dict[live_uid]["title"],
-                    "now": live_title,
-                    "name": liver_name,
-                    "uid": live_uid
-                })
-                live_user_dict[live_uid]["title"] = live_title
-            if(live_user_dict[live_uid]["status"] != now_live_status):
-                live_list.append({
-                    "type": "bili_live",
-                    "subtype": "status",
-                    "pre": live_user_dict[live_uid]["status"],
-                    "now": now_live_status,
-                    "name": liver_name,
-                    "title": live_title,
-                    "uid": live_uid,
-                    "room_id": room_id
-                })
-                live_user_dict[live_uid]["status"] = now_live_status
+        live_cover = status_dict[live_uid]['cover_from_user']
+        msg_template = {
+            "type": "bili_live",
+            "name": liver_name,
+            "uid": live_uid,
+            "title": live_title,
+            "room_id": room_id,
+            "cover": live_cover
+        }
+        update_record(live_list, live_user_dict[live_uid], "title", live_title, msg_template)
+        update_record(live_list, live_user_dict[live_uid], "status", now_live_status, msg_template)
+        update_record(live_list, live_user_dict[live_uid], "cover", live_cover, msg_template)
     save_live_record()
     return live_list
 

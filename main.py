@@ -26,7 +26,7 @@ ws_conn_dict = dict()
 ws_server = None
 logger: logging.Logger = None
 LOGGER_NAME = "crawler"
-LOGGER_PRINT_FORMAT = "\033[1;33m[%(levelname)s] (%(filename)s:%(lineno)s) %(funcName)s:\033[0m\n%(message)s"
+LOGGER_PRINT_FORMAT = "\033[1;33m%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)s) %(funcName)s:\033[0m\n%(message)s"
 LOGGER_FILE_FORMAT = "%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)s) %(funcName)s:\n%(message)s"
 logging.basicConfig(format=LOGGER_PRINT_FORMAT)
 log_path = os.path.join(os.path.dirname(__file__), "logs", f"{LOGGER_NAME}.log")
@@ -91,7 +91,7 @@ def load_config():
                             push_config_dict[typ][x] = set(push_config_dict[typ][x])
                 else:
                     push_config_dict[typ] = set(push_config_dict[typ])
-        print(push_config_dict)
+        # print(push_config_dict)
     except:
         pass
 

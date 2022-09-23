@@ -9,6 +9,7 @@ import random
 import traceback
 import httpx
 import json
+from bs4 import BeautifulSoup
 from bilibili_api.user import User, RelationType
 from bilibili_api.utils.Credential import Credential
 from bilibili_api.exceptions.ResponseCodeException import ResponseCodeException
@@ -85,16 +86,15 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
             "text": dyn_text,
         }
     elif dyn_typ == 64:  # 文章
-        cvid = str(content['id'])
+        cvid = str(content['id']) # 文章id
         title = content['title']
         summary = content['summary']
         cover_pic = content['image_urls'][0]
         res = {
-            "id": cvid,
             "title": title,
             "desc": summary,
             "cover_pic": cover_pic,
-            "link_prefix": "https://www.bilibili.com/read/cv"
+            "link": f"https://www.bilibili.com/read/cv{cvid}"
         }
     elif dyn_typ == 8:  # 投稿视频
         title = content['title']
@@ -104,7 +104,6 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
             "title": title,
             "desc": video_desc,
             "cover_pic": cover_pic,
-            "link_prefix": "https://www.bilibili.com/video/"
         }
     elif dyn_typ == 1:  # 转发动态
         dyn_text = content['item']['content']
@@ -152,14 +151,14 @@ async def parse_bili_dyn(card: dict) -> dict:
         "id": dyn_id,
         "oid": dyn_oid,
         "oid_type": oid_type,
-        "link_prefix": "https://t.bilibili.com/",
+        "link": f"https://t.bilibili.com/{dyn_id}",
         "created_time": created_time
     }
     parse_res = await parse_bili_dyn_content(dyn_typ, card["card"])
     for key, value in parse_res.items():
         res[key] = value
     if dyn_typ == 8:
-        res["id"] = card['desc']['bvid']
+        res["link"] = f"https://www.bilibili.com/video/{card['desc']['bvid']}" # 视频bv
     elif dyn_typ == 1:
         res["retweet"]["created_time"] = card["desc"]["origin"]["timestamp"]
     return res
@@ -201,7 +200,11 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
     try:
         cards_data = json.loads(res)
     except json.JSONDecodeError:
-        logger.error(f"B站动态解析出错!返回值如下:\n{res}")
+        try:
+            bs = BeautifulSoup(res, features="lxml")
+            logger.error(f"B站动态解析出错!返回值如下:\n{bs.find('body').text.strip()}")
+        except:
+            logger.error(f"B站动态解析出错!返回值如下:\n{res}")
         return dyn_list
     if(cards_data['code'] != 0):
         if(cards_data['code'] == -6):

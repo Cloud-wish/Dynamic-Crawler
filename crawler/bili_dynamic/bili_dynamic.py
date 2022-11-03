@@ -7,23 +7,22 @@ import logging
 from queue import Queue
 import random
 import traceback
+from urllib.parse import urlparse
 import httpx
 import json
 from bs4 import BeautifulSoup
 from bilibili_api.user import User, RelationType
 from bilibili_api.utils.Credential import Credential
 from bilibili_api.exceptions.ResponseCodeException import ResponseCodeException
-from bilibili_api.comment import ResourceType, OrderType, get_comments
+from bilibili_api.comment import CommentResourceType, OrderType, get_comments
 
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 dyn_record_dict = None
 logger = logging.getLogger("crawler")
 
-def link_to_https(link: str) -> str:
-    if(not link.startswith("https://")):
-        if(link.startswith("http://")):
-            link = "https" + link[4::]
-    return link
+def link_process(link: str) -> str:
+    res = urlparse(link)
+    return "https://" + res.netloc + res.path
 
 def trim_dict(data: dict[str], required_values: list[str] = None, excluded_values: list[str] = None) -> dict[str]:
     """返回一个新的dict"""
@@ -38,33 +37,54 @@ def trim_dict(data: dict[str], required_values: list[str] = None, excluded_value
                 res[key] = data[key]
     return res
 
-def update_user(uid: str, user_dict: dict, msg_list: list, msg_type: str, subtype: str, now: str) -> bool:
-    if(not subtype in user_dict[uid]):
-        user_dict[uid][subtype] = now
-    elif(user_dict[uid][subtype] != now):
-        msg_list.append({
-            "type": msg_type,
-            "subtype": subtype,
-            "uid": uid,
-            "name": user_dict[uid]["name"],
-            "pre": user_dict[uid][subtype],
-            "now": now
-        })
-        user_dict[uid][subtype] = now
-        return True
-    return False
+def parse_dyn_user(user: dict) -> dict:
+    user_info = user.get("info", {})
+    res = {
+        "uid": user_info.get("uid"),
+        "name": user_info.get("uname"),
+        "avatar": user_info.get("face"),
+        "desc": user.get("sign")
+    }
+    if res["uid"]:
+        res["uid"] = str(res["uid"])
+    if res["avatar"]:
+        res["avatar"] = link_process(res["avatar"])
+    for key in list(res.keys()):
+        if not res[key]:
+            del res[key]
+    return res
 
-def get_dyn_oid_type(card: dict) -> tuple(int, ResourceType):
-    dyn_type = ResourceType.DYNAMIC
+def update_user(record: dict, typ: str, user: dict, msg_list: list):
+    _user = copy.deepcopy(user)
+    if not "user" in record:
+        record["user"] = {}
+    if "uid" in _user:
+        del _user["uid"]
+    for key, value in record["user"].items():
+        if key in _user and value != _user[key]:
+            msg_list.append({
+                "type": typ,
+                "subtype": key,
+                "user": user,
+                "pre": value,
+                "now": _user[key]
+            })
+        elif not key in _user:
+            _user[key] = value
+            user[key] = value
+    record["user"] = _user
+
+def get_dyn_oid_type(card: dict) -> tuple(int, CommentResourceType):
+    dyn_type = CommentResourceType.DYNAMIC
     dyn_oid = card['desc']['dynamic_id']
     if "rid" in card["desc"]:
         if "bvid" in card["desc"]:
-            dyn_type = ResourceType.VIDEO
+            dyn_type = CommentResourceType.VIDEO
         elif "pictures" in card["card"].get("item", {}):
-            dyn_type = ResourceType.DYNAMIC_DRAW
+            dyn_type = CommentResourceType.DYNAMIC_DRAW
         elif card['desc']['type'] == 64:
-            dyn_type = ResourceType.ARTICLE
-    if dyn_type != ResourceType.DYNAMIC:
+            dyn_type = CommentResourceType.ARTICLE
+    if dyn_type != CommentResourceType.DYNAMIC:
         dyn_oid = card["desc"]["rid"]
     return (dyn_oid, dyn_type.value)
 
@@ -108,35 +128,25 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
     elif dyn_typ == 1:  # 转发动态
         dyn_text = content['item']['content']
         orig_typ = content['item']['orig_type']
+        res = {
+            "text": dyn_text,
+            "retweet": {}
+        }
         if(orig_typ in [1,2,4,8,64]):
             orig_content = json.loads(content['origin'])
-            orig_uname = content['origin_user']['info']['uname']
-            orig_uid = str(content['origin_user']['info']['uid'])
-            res = {
-                "text": dyn_text,
-                "retweet": await parse_bili_dyn_content(orig_typ, orig_content)
-            }
-            res["retweet"]["name"] = orig_uname
-            res["retweet"]["uid"] = orig_uid
-            res["retweet"]["dyn_type"] = orig_typ
-            res["retweet"]["is_retweet"] = True
-        else:
-            res = {
-                "text": dyn_text,
-                "retweet": {}
-            }
-            res["retweet"]["name"] = "[未知用户名]"
-            res["retweet"]["uid"] = "unknown"
-            res["retweet"]["dyn_type"] = orig_typ
-            res["retweet"]["is_retweet"] = True
+            res["retweet"] = await parse_bili_dyn_content(orig_typ, orig_content)
+        res["retweet"]["dyn_type"] = orig_typ
+        res["retweet"]["is_retweet"] = True
+        res["retweet"]["user"] = parse_dyn_user(content.get('origin_user', {}))
+        if not res["retweet"]["user"]["name"]:
+            res["retweet"]["user"]["name"] = "[未知用户名]"
+        if not res["retweet"]["user"]["uid"]:
+            res["retweet"]["user"]["uid"] = "unknown"
     return res
 
 async def parse_bili_dyn(card: dict) -> dict:
     if type(card["card"]) == str:
         card["card"] = json.loads(card["card"])
-    uid = str(card['desc']['user_profile']['info']['uid'])
-    uname = card['desc']['user_profile']['info']['uname']
-    avatar = card['desc']['user_profile']['info']['face']
     created_time = card['desc']['timestamp']
     dyn_id = str(card['desc']['dynamic_id'])
     dyn_typ = card['desc']['type']
@@ -145,10 +155,8 @@ async def parse_bili_dyn(card: dict) -> dict:
         "type": "bili_dyn",
         "subtype": "dynamic",
         "dyn_type": dyn_typ,
-        "uid": uid,
-        "name": uname,
-        "avatar": avatar,
         "id": dyn_id,
+        "user": parse_dyn_user(card['desc']['user_profile']),
         "oid": dyn_oid,
         "oid_type": oid_type,
         "link": f"https://t.bilibili.com/{dyn_id}",
@@ -167,17 +175,21 @@ async def parse_bili_dyn_cmt(cmt: dict) -> dict:
     user_id = str(cmt['member']['mid'])
     user_desc = cmt['member']['sign']
     user_name = cmt['member']['uname']
-    user_avatar = cmt['member']['avatar']
+    user_avatar = link_process(cmt['member']['avatar'])
+    user = {
+        "uid": user_id,
+        "desc": user_desc,
+        "name": user_name,
+        "avatar": user_avatar
+    }
     cmt_text = cmt['content']['message']
     comment_id = str(cmt['rpid'])
     created_time = int(cmt['ctime'])
     res = {
         "type": "bili_dyn",
         "subtype": "comment",
-        "uid": user_id,
-        "avatar": user_avatar,
         "id": comment_id,
-        "name": user_name,
+        "user": user,
         "text": cmt_text,
         "created_time": created_time
     }
@@ -217,19 +229,14 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
     for dyn_uid in dyn_user_dict:
         now_dyn_time_dict[dyn_uid] = dyn_user_dict[dyn_uid]["last_dyn_time"]
     for card in cards_data:
-        uid = str(card['desc']['uid'])
-        user_name = card['desc']['user_profile']['info']['uname']
-        user_desc = card['desc']['user_profile']['sign']
-        user_avatar = card['desc']['user_profile']['info']['face']
-        user_avatar = link_to_https(user_avatar) # 转换，B站有时抽风
+        user = parse_dyn_user(card['desc']['user_profile'])
+        uid = user['uid']
         created_time = int(card['desc']['timestamp'])
         if (not uid in dyn_user_dict): # 不是推送的人
             continue
         # 更新信息
         if(detail_enable):
-            update_user(uid, dyn_user_dict, dyn_list, "bili_dyn", "avatar", user_avatar)
-            update_user(uid, dyn_user_dict, dyn_list, "bili_dyn", "desc", user_desc)
-            update_user(uid, dyn_user_dict, dyn_list, "bili_dyn", "name", user_name)
+            update_user(dyn_user_dict[uid], "bili_dyn", user, dyn_list)
             dyn_user_dict[uid]["update_time"] = int(datetime.now().timestamp())
         if (not dyn_user_dict[uid]["last_dyn_time"] < created_time):# 不是新动态
             continue
@@ -276,13 +283,14 @@ async def get_bili_users_detail(bili_ua: str, bili_cookie: str, uid_list: list[s
         user_desc = data['sign']
         user_name = data['name']
         user_avatar = data['face']
-        user_avatar = link_to_https(user_avatar) # 转换
-        # 更新头像
-        update_user(uid, dyn_user_dict, msg_list, "bili_dyn", "avatar", user_avatar)
-        # 更新简介
-        update_user(uid, dyn_user_dict, msg_list, "bili_dyn", "desc", user_desc)
-        # 更新用户名
-        update_user(uid, dyn_user_dict, msg_list, "bili_dyn", "name", user_name)
+        user_avatar = link_process(user_avatar) # 转换
+        user = {
+            "uid": uid,
+            "desc": user_desc,
+            "name": user_name,
+            "avatar": user_avatar
+        }
+        update_user(dyn_user_dict[uid], "bili_dyn", user, msg_list)
         # 记录更新时间
         dyn_user_dict[uid]["update_time"] = int(datetime.now().timestamp())
     if not len(uid_list) == 0:
@@ -346,31 +354,29 @@ async def get_dynamic_comment(dyn: dict, dyn_uid: str):
     dyn_user_dict: dict = dyn_record_dict["user"]
     last_dyn_cmt_time = dyn_user_dict[dyn_uid]["cmt_config"].get("last_dyn_cmt_time", int(datetime.now().timestamp()))
     now_dyn_cmt_time = last_dyn_cmt_time
-    resp = await get_comments(oid=dyn["oid"], type_=ResourceType(dyn["oid_type"]), order=OrderType.LIKE)
+    resp = await get_comments(oid=dyn["oid"], type_=CommentResourceType(dyn["oid_type"]), order=OrderType.LIKE)
     comments = resp["replies"]
     if("upper" in resp and "top" in resp["upper"] and resp["upper"]["top"]):
         comments.append(resp["upper"]["top"])
     if comments:
         for comment in comments:
             cmt = await parse_bili_dyn_cmt(comment)
-            if cmt["uid"] == dyn_uid and last_dyn_cmt_time < cmt["created_time"]:
+            if cmt["user"]["uid"] == dyn_uid and last_dyn_cmt_time < cmt["created_time"]:
                 if now_dyn_cmt_time < cmt["created_time"]:
                     now_dyn_cmt_time = cmt["created_time"]
                 _cmt = copy.deepcopy(cmt)
-                _cmt["orig_dyn_id"] = dyn["id"]
+                _cmt["root"] = dyn
                 cmt_list.append(_cmt)
             if "replies" in comment and not comment["replies"] is None:
                 for inner_comment in comment["replies"]:
                     inner_cmt = await parse_bili_dyn_cmt(inner_comment)
-                    if inner_cmt["uid"] == dyn_uid and last_dyn_cmt_time < inner_cmt["created_time"]:
+                    if inner_cmt["user"]["uid"] == dyn_uid and last_dyn_cmt_time < inner_cmt["created_time"]:
                         if now_dyn_cmt_time < inner_cmt["created_time"]:
                             now_dyn_cmt_time = inner_cmt["created_time"]
                         inner_cmt["reply"] = cmt
-                        inner_cmt["orig_dyn_id"] = dyn["id"]
+                        inner_cmt["root"] = dyn
                         cmt_list.append(inner_cmt)
-        dyn_user_dict[dyn_uid]["cmt_config"]["last_dyn_cmt_time"] = now_dyn_cmt_time
-        save_dyn_record()
-    return cmt_list
+    return cmt_list, now_dyn_cmt_time
 
 async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
     global dyn_record_dict
@@ -402,12 +408,14 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
                 cnt = 0
                 if dyn_record_dict["user"][uid]["cmt_config"]["is_top"]:
                     dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"] = (await get_user_dyn_list(uid, True))[0:1]
+                now_dyn_cmt_time = dyn_record_dict["user"][uid]["cmt_config"].get("last_dyn_cmt_time", int(datetime.now().timestamp()))
                 for dyn in dyn_record_dict["user"][uid]["cmt_config"].get("dyn_list", []):
                     if(cnt == limit):
                         break
                     try:
-                        cmt_list = await get_dynamic_comment(dyn, uid)
+                        cmt_list, cmt_time = await get_dynamic_comment(dyn, uid)
                         cnt += 1
+                        now_dyn_cmt_time = max(now_dyn_cmt_time, cmt_time)
                         if(cmt_list):
                             for cmt in cmt_list:
                                 msg_queue.put(cmt)
@@ -421,6 +429,8 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
                     except:
                         errmsg = traceback.format_exc()
                         logger.error(f"B站动态评论抓取出错！错误信息：\n{errmsg}")
+                dyn_record_dict["user"][uid]["cmt_config"]["last_dyn_cmt_time"] = now_dyn_cmt_time
+                save_dyn_record()
                 await asyncio.sleep(interval)
         await asyncio.sleep(10)
 

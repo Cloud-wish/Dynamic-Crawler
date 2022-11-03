@@ -249,7 +249,7 @@ def msg_sender():
         msg = msg_queue.get(block = True, timeout = None)
         msg_queue.task_done()
         msg_type = msg["type"]
-        uid = msg["uid"]
+        uid = msg["user"]["uid"]
         logger.debug(f"消息推送线程接收到消息：\n{jsons.dumps(msg, ensure_ascii=False)}")
         for client_name in push_config_dict[msg_type][uid]:
             http_url = push_config_dict["clients"][client_name]

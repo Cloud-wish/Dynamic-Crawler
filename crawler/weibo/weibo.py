@@ -139,6 +139,8 @@ async def parse_text(wb_text, headers) -> tuple[str, list]:
     return (wb_soup.getText(), pic_list)
 
 def parse_weibo_user(user: dict) -> dict:
+    if not user:
+        user = {}
     res = {
         "uid": user.get("id"),
         "name": user.get("screen_name"),
@@ -288,10 +290,13 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
             if not (wb_user_dict[uid]["last_wb_time"] < created_time): # 不是新微博
                 continue
             # 以下是处理新微博的内容
-            if now_wb_time_dict[uid] < created_time:
-                now_wb_time_dict[uid] = created_time
-            weibo = await parse_weibo(w, headers)
-            wb_list.append(weibo)
+            try:
+                weibo = await parse_weibo(w, headers)
+                wb_list.append(weibo)
+                if now_wb_time_dict[uid] < created_time:
+                    now_wb_time_dict[uid] = created_time
+            except:
+                logger.error(f"获取新微博时解析微博失败！原微博：\n{w}")
         for uid in now_wb_time_dict.keys():
             wb_user_dict[uid]["last_wb_time"] = now_wb_time_dict[uid]
         save_wb_record()
@@ -600,7 +605,10 @@ async def get_user_wb_list(wb_cookie: str, wb_ua: str, wb_uid: str, required_val
         weibos.sort(key=wb_time_key, reverse=True)
         for weibo in weibos:
             weibo_typ = weibo['mblogtype'] # 0=普通 1=热门 2=置顶（推测）
-            wb_list.append(await parse_weibo(weibo, headers, get_long = False, required_values=required_values))
+            try:
+                wb_list.append(await parse_weibo(weibo, headers, get_long = False, required_values=required_values))
+            except:
+                logger.error(f"获取用户微博列表时解析微博失败！原微博：\n{weibo}")
     else:
         logger.error(f"未成功获取UID：{wb_uid}用户的微博列表！返回值：\n{json.dumps(res, ensure_ascii=False)}")
     return {"ok": res['ok'], "wb_list": wb_list}

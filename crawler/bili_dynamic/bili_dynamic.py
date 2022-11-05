@@ -229,9 +229,13 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
     for dyn_uid in dyn_user_dict:
         now_dyn_time_dict[dyn_uid] = dyn_user_dict[dyn_uid]["last_dyn_time"]
     for card in cards_data:
-        user = parse_dyn_user(card['desc']['user_profile'])
-        uid = user['uid']
-        created_time = int(card['desc']['timestamp'])
+        try:
+            user = parse_dyn_user(card['desc']['user_profile'])
+            uid = user['uid']
+            created_time = int(card['desc']['timestamp'])
+        except:
+            logger.error(f"B站动态用户解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
+            continue
         if (not uid in dyn_user_dict): # 不是推送的人
             continue
         # 更新信息
@@ -243,7 +247,11 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
         # 以下是处理新动态的内容
         if now_dyn_time_dict[uid] < created_time:
             now_dyn_time_dict[uid] = created_time
-        dyn = await parse_bili_dyn(card)
+        try:
+            dyn = await parse_bili_dyn(card)
+        except:
+            logger.error(f"B站动态解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
+            continue
         if("cmt_config" in dyn_user_dict[uid]):
             while(len(dyn_user_dict[uid]["cmt_config"]["dyn_list"]) >= comment_limit * 2):
                 dyn_user_dict[uid]["cmt_config"]["dyn_list"].pop()

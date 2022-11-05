@@ -50,7 +50,7 @@ def parse_dyn_user(user: dict) -> dict:
     if res["avatar"]:
         res["avatar"] = link_process(res["avatar"])
     for key in list(res.keys()):
-        if not res[key]:
+        if res[key] is None:
             del res[key]
     return res
 

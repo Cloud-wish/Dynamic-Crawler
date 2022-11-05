@@ -140,7 +140,7 @@ async def parse_text(wb_text, headers) -> tuple[str, list]:
 
 def parse_weibo_user(user: dict) -> dict:
     if not user:
-        user = {}
+        return {}
     res = {
         "uid": user.get("id"),
         "name": user.get("screen_name"),
@@ -151,6 +151,9 @@ def parse_weibo_user(user: dict) -> dict:
         res["uid"] = str(res["uid"])
     if res["avatar"]:
         res["avatar"] = link_process(res["avatar"])
+    for key in list(res.keys()):
+        if res[key] is None:
+            del res[key]
     return res
 
 def update_user(record: dict, typ: str, user: dict, msg_list: list):
@@ -278,9 +281,14 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
         for i in range(len(weibos)):
             w = weibos[i]
             # 获取用户简介
-            user = parse_weibo_user(w.get("user", {}))
-            uid = user["uid"]
-            created_time = int(get_created_time(w['created_at']).timestamp())
+            try:
+                user = parse_weibo_user(w.get("user", {}))
+                uid = user["uid"]
+                created_time = int(get_created_time(w['created_at']).timestamp())
+            except:
+                logger.error(f"一条微博用户解析错误，已跳过")
+                logger.debug(f"微博用户解析出错！错误信息：\n{traceback.format_exc()}\n原始微博：{w}")
+                continue
             # 判断是否在抓取列表中
             if not (uid in wb_user_dict):
                 continue
@@ -348,8 +356,12 @@ async def get_weibo_user_detail(weibo_ua: str, weibo_cookie: str, uid: str):
     except json.JSONDecodeError:
         logger.error(f"微博用户详情解析出错!\nUID:{uid}\n返回值如下:\n{res}")
         return msg_list
-    user = parse_weibo_user(data['userInfo'])
-    uid = user["uid"]
+    try:
+        user = parse_weibo_user(data['userInfo'])
+        uid = user["uid"]
+    except:
+        logger.error(f"微博用户详情解析出错！原用户详情：{data}")
+        return []
     update_user(wb_user_dict[uid], "weibo", user, msg_list)
     wb_user_dict[uid]["update_time"] = int(datetime.now().timestamp())
     save_wb_record()

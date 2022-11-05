@@ -234,7 +234,8 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
             uid = user['uid']
             created_time = int(card['desc']['timestamp'])
         except:
-            logger.error(f"B站动态用户解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
+            logger.info(f"一条B站动态用户解析错误，可能不是动态消息，已跳过")
+            logger.debug(f"B站动态用户解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
             continue
         if (not uid in dyn_user_dict): # 不是推送的人
             continue
@@ -250,7 +251,8 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
         try:
             dyn = await parse_bili_dyn(card)
         except:
-            logger.error(f"B站动态解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
+            logger.info(f"一条B站动态解析错误，可能不是动态消息，已跳过")
+            logger.debug(f"B站动态解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
             continue
         if("cmt_config" in dyn_user_dict[uid]):
             while(len(dyn_user_dict[uid]["cmt_config"]["dyn_list"]) >= comment_limit * 2):

@@ -431,7 +431,10 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
                                 msg_queue.put(cmt)
                     except ResponseCodeException as e:
                         if e.code == -404:
-                            logger.error(f"B站动态评论抓取出错！原动态可能已被删除，已从抓取列表中删除该条动态！")
+                            logger.error(f"B站动态评论抓取出错，原动态可能已被删除")
+                            dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"].remove(dyn)
+                        elif e.code == 12002:
+                            logger.error(f"B站动态评论抓取出错，原动态评论区已关闭，已从抓取列表中删除该动态！")
                             dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"].remove(dyn)
                         else:
                             errmsg = traceback.format_exc()

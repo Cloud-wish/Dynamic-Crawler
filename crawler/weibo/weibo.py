@@ -520,9 +520,9 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
         for uid in uid_list:
             if("cmt_config" in wb_record_dict["user"][uid]):
                 is_cmt = True
-                logger.debug(f"执行微博用户评论抓取\nUID：{uid}")
+                logger.debug(f"执行微博用户评论抓取 UID：{uid}")
                 cnt = 0
-                logger.debug(f"执行微博列表与用户详情更新\nUID：{uid}")
+                logger.debug(f"执行微博列表与用户详情更新 UID：{uid}")
                 try:
                     res = await get_user_wb_list(wb_cookie, wb_ua, uid)
                     if res["ok"]:
@@ -534,10 +534,10 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                             for msg in msg_list:
                                 msg_queue.put(msg)
                     else:
-                        raise Exception(f"UID:{uid}的微博用户微博列表更新失败！")
+                        raise Exception("")
                 except:
                     errmsg = traceback.format_exc()
-                    logger.error(f"微博列表抓取出错!\n{errmsg}")
+                    logger.error(f"UID:{uid}的微博用户微博列表更新失败！\n{errmsg}")
                     await asyncio.sleep(random.random()*7 + interval)
                     continue
                 await asyncio.sleep(random.random()*3 + 2)
@@ -562,7 +562,7 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                         logger.error(f"微博评论抓取出错！错误信息：\n{errmsg}")
                 wb_record_dict["user"][uid]["cmt_config"]["last_wb_cmt_time"] = now_wb_cmt_time
                 save_wb_record()
-                await asyncio.sleep(random.random()*7 + interval)
+                await asyncio.sleep(random.random()*5 + interval)
         if not is_cmt:
             await asyncio.sleep(interval)
 

@@ -138,10 +138,6 @@ async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
         res["retweet"]["dyn_type"] = orig_typ
         res["retweet"]["is_retweet"] = True
         res["retweet"]["user"] = parse_dyn_user(content.get('origin_user', {}))
-        if not res["retweet"]["user"]["name"]:
-            res["retweet"]["user"]["name"] = "[未知用户名]"
-        if not res["retweet"]["user"]["uid"]:
-            res["retweet"]["user"]["uid"] = "unknown"
     return res
 
 async def parse_bili_dyn(card: dict) -> dict:
@@ -254,10 +250,6 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
             logger.info(f"一条B站动态解析错误，可能不是动态消息，已跳过")
             logger.debug(f"B站动态解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
             continue
-        if("cmt_config" in dyn_user_dict[uid]):
-            while(len(dyn_user_dict[uid]["cmt_config"]["dyn_list"]) >= comment_limit * 2):
-                dyn_user_dict[uid]["cmt_config"]["dyn_list"].pop()
-            dyn_user_dict[uid]["cmt_config"]["dyn_list"].insert(0, trim_dict(dyn, required_values=["id", "oid", "oid_type"]))
         dyn_list.append(dyn)
     for dyn_uid in now_dyn_time_dict.keys():
         dyn_user_dict[dyn_uid]["last_dyn_time"] = now_dyn_time_dict[dyn_uid]
@@ -396,30 +388,46 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
     interval = dyn_config_dict["comment_interval"]
     limit = dyn_config_dict["comment_limit"]
     await asyncio.sleep(1)
-    logger.info("更新抓取评论用户的B站动态列表...")
-    uid_list = list(dyn_record_dict["user"].keys())
-    for uid in uid_list:
-        if("cmt_config" in dyn_record_dict["user"][uid] and not dyn_record_dict["user"][uid]["cmt_config"]["is_top"]):
-            logger.debug(f"执行B站用户动态列表更新\nUID：{uid}")
-            try:
-                res = await get_user_dyn_list(uid)
-                dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"] = res
-                logger.debug(f"UID:{uid}的B站用户动态列表更新成功")
-            except:
-                errmsg = traceback.format_exc()
-                logger.error(f"UID:{uid}的B站用户动态列表更新失败！错误信息：\n{errmsg}")
-            await asyncio.sleep(30)
+    # logger.info("更新抓取评论用户的B站动态列表...")
+    # uid_list = list(dyn_record_dict["user"].keys())
+    # for uid in uid_list:
+    #     if("cmt_config" in dyn_record_dict["user"][uid] and not dyn_record_dict["user"][uid]["cmt_config"]["is_top"]):
+    #         logger.debug(f"执行B站用户动态列表更新\nUID：{uid}")
+    #         try:
+    #             res = await get_user_dyn_list(uid)
+    #             dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"] = res
+    #             logger.debug(f"UID:{uid}的B站用户动态列表更新成功")
+    #         except:
+    #             errmsg = traceback.format_exc()
+    #             logger.error(f"UID:{uid}的B站用户动态列表更新失败！错误信息：\n{errmsg}")
+    #         await asyncio.sleep(30)
     logger.info("开始抓取B站动态评论...")
     while(True):
         uid_list = list(dyn_record_dict["user"].keys())
+        is_cmt = False
         for uid in uid_list:
             if("cmt_config" in dyn_record_dict["user"][uid]):
-                logger.debug(f"执行B站用户评论抓取\nUID：{uid}")
+                is_cmt = True
+                logger.debug(f"执行B站用户评论抓取 UID：{uid}")
                 cnt = 0
+                logger.debug(f"执行B站动态列表与用户详情更新 UID：{uid}")
+                try:
+                    dyn_list = await get_user_dyn_list(uid, dyn_record_dict["user"][uid]["cmt_config"]["is_top"])
+                    logger.debug(f"UID:{uid}的B站用户动态列表更新成功")
+                    msg_list = []
+                    update_user(dyn_record_dict["user"][uid], "bili_dyn", dyn_list[0]["user"], msg_list)
+                    if(msg_list):
+                        for msg in msg_list:
+                            msg_queue.put(msg)
+                except:
+                    errmsg = traceback.format_exc()
+                    logger.error(f"UID:{uid}的B站用户动态列表更新失败！\n{errmsg}")
+                    await asyncio.sleep(random.random()*7 + interval)
+                    continue
                 if dyn_record_dict["user"][uid]["cmt_config"]["is_top"]:
-                    dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"] = (await get_user_dyn_list(uid, True))[0:1]
+                    dyn_list = dyn_list[0:1]
                 now_dyn_cmt_time = dyn_record_dict["user"][uid]["cmt_config"].get("last_dyn_cmt_time", int(datetime.now().timestamp()))
-                for dyn in dyn_record_dict["user"][uid]["cmt_config"].get("dyn_list", []):
+                for dyn in dyn_list:
                     if(cnt == limit):
                         break
                     try:
@@ -431,11 +439,9 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
                                 msg_queue.put(cmt)
                     except ResponseCodeException as e:
                         if e.code == -404:
-                            logger.error(f"B站动态评论抓取出错，原动态可能已被删除")
-                            dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"].remove(dyn)
+                            logger.error(f"B站动态评论抓取出错，ID为{dyn['id']}的动态可能已被删除")
                         elif e.code == 12002:
-                            logger.error(f"B站动态评论抓取出错，原动态评论区已关闭，已从抓取列表中删除该动态！")
-                            dyn_record_dict["user"][uid]["cmt_config"]["dyn_list"].remove(dyn)
+                            logger.error(f"B站动态评论抓取出错，ID为{dyn['id']}的动态评论区已关闭")
                         else:
                             errmsg = traceback.format_exc()
                             logger.error(f"B站动态评论抓取出错！错误信息：\n{errmsg}")
@@ -444,8 +450,9 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
                         logger.error(f"B站动态评论抓取出错！错误信息：\n{errmsg}")
                 dyn_record_dict["user"][uid]["cmt_config"]["last_dyn_cmt_time"] = now_dyn_cmt_time
                 save_dyn_record()
-                await asyncio.sleep(interval)
-        await asyncio.sleep(10)
+                await asyncio.sleep(random.random()*5 + interval)
+        if not is_cmt:
+            await asyncio.sleep(interval)
 
 async def bili_follow(uid: str, config_dict: dict):
     follow_user = User(
@@ -466,7 +473,7 @@ async def get_user_dyn_list(dyn_uid: str, need_top: bool = False):
     dyn_list = []
     for card in card_list:
         dyn = await parse_bili_dyn(card)
-        dyn_list.append(trim_dict(dyn, required_values=["id", "oid", "oid_type"]))
+        dyn_list.append(dyn)
     return dyn_list
 
 async def add_dyn_user(dyn_uid: str, config_dict: dict) -> dict:
@@ -506,11 +513,7 @@ async def add_dyn_cmt_user(dyn_uid: str, config_dict: dict, is_top: bool = False
         resp = {"code": 17, "msg": "The bilibili user is not in the crawler list before"}
     else:
         try:
-            res = await get_user_dyn_list(dyn_uid)
-            if is_top:
-                res = []
             cmt_config = {
-                "dyn_list": res,
                 "is_top": is_top,
                 "enable_cmt": True,
                 "last_dyn_cmt_time": int(datetime.now().timestamp())

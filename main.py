@@ -243,33 +243,41 @@ async def remove(req):
         logger.debug(f"HTTP服务收到remove命令\nparams:{jsons.dumps(params, ensure_ascii=False)}\nresp:{jsons.dumps(resp, ensure_ascii=False)}")
     return web.json_response(resp)
 
+def send_msg(client_name: str, msg: dict):
+    http_url = push_config_dict["clients"][client_name]
+    ws_conn = ws_conn_dict.get(client_name, None)
+    if(ws_conn is None and http_url == "websocket"):
+        logger.error(f"client_name:{client_name} 未连接Websocket服务，无法推送消息！\n消息内容：\n{jsons.dumps(msg, ensure_ascii=False)}")
+        return
+    if(not ws_conn is None):
+        try:
+            asyncio.get_event_loop().run_until_complete(ws_conn.send(jsons.dumps(msg)))
+            return
+        except:
+            errmsg = traceback.format_exc()
+            logger.error(f"Websocket消息推送发生错误！\nclient_name:{client_name}\n{errmsg}")
+    if(not http_url == "websocket"):
+        try:
+            resp = requests.post(url=http_url, json=msg)
+        except:
+            errmsg = traceback.format_exc()
+            logger.error(f"HTTP消息推送发生错误！\nclient_name:{client_name} url:{http_url}\n{errmsg}")
+
 def msg_sender():
     asyncio.set_event_loop(asyncio.new_event_loop())
     while True:
         msg = msg_queue.get(block = True, timeout = None)
         msg_queue.task_done()
         msg_type = msg["type"]
+        subtype = msg["subtype"]
         uid = msg["user"]["uid"]
         logger.debug(f"消息推送线程接收到消息：\n{jsons.dumps(msg, ensure_ascii=False)}")
-        for client_name in push_config_dict[msg_type][uid]:
-            http_url = push_config_dict["clients"][client_name]
-            ws_conn = ws_conn_dict.get(client_name, None)
-            if(ws_conn is None and http_url == "websocket"):
-                logger.error(f"client_name:{client_name} 未连接Websocket服务，无法推送消息！\n消息内容：\n{jsons.dumps(msg, ensure_ascii=False)}")
-                continue
-            if(not ws_conn is None):
-                try:
-                    asyncio.get_event_loop().run_until_complete(ws_conn.send(jsons.dumps(msg)))
-                    continue
-                except:
-                    errmsg = traceback.format_exc()
-                    logger.error(f"Websocket消息推送发生错误！\nclient_name:{client_name}\n{errmsg}")
-            if(not http_url == "websocket"):
-                try:
-                    resp = requests.post(url=http_url, json=msg)
-                except:
-                    errmsg = traceback.format_exc()
-                    logger.error(f"HTTP消息推送发生错误！\nclient_name:{client_name} url:{http_url}\n{errmsg}")
+        if not subtype in push_config_dict[msg_type]:
+            for client_name in push_config_dict[msg_type][uid]:
+                send_msg(client_name, msg)
+        else:
+            for client_name in push_config_dict[msg_type][subtype][uid]:
+                send_msg(client_name, msg)
 
 async def receiver(websocket):
     global ws_conn_dict

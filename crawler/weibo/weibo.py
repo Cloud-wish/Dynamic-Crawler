@@ -373,20 +373,48 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
     wb_cookie = wb_config_dict["cookie"]
     wb_ua = wb_config_dict["ua"]
     interval = wb_config_dict["detail_interval"]
+    wb_user_dict: dict = wb_record_dict["user"]
     while(True):
-        uid_list = list(wb_record_dict["user"].keys())
-        for uid in uid_list:
-            if(datetime.now().timestamp() - wb_record_dict["user"][uid].get("update_time", 0) > 60 * 10):
-                logger.debug(f"执行微博用户详情更新\nUID：{uid}")
-                try:
-                    msg_list = await get_weibo_user_detail(wb_ua, wb_cookie, uid)
-                    if(msg_list):
-                        for msg in msg_list:
-                            msg_queue.put(msg)
-                except:
-                    errmsg = traceback.format_exc()
-                    logger.error(f"微博用户信息抓取出错!\n{errmsg}")
-                await asyncio.sleep(interval)
+        try:
+            uid_list = list(wb_record_dict["user"].keys())
+            logger.info(f"微博用户数：{len(uid_list)}")
+            for uid in uid_list:
+                logger.info(f'微博列表与用户详情更新 UID：{uid} 当前时间{datetime.now().timestamp()} 记录时间{wb_record_dict["user"][uid].get("update_time", 0)}')
+                if(datetime.now().timestamp() - wb_record_dict["user"][uid].get("update_time", 0) > 60 * 30): # 30 min
+                    logger.info(f"执行微博列表与用户详情更新 UID：{uid}")
+                    try:
+                        res = await get_user_wb_list(wb_cookie, wb_ua, uid)
+                        if res["ok"]:
+                            logger.info(f"UID:{uid}的微博用户微博列表更新成功")
+                            wb_list = res["wb_list"]
+                            if wb_list:
+                                msg_list = []
+                                update_user(wb_record_dict["user"][uid], "weibo", wb_list[0]["user"], msg_list)
+                                if(msg_list):
+                                    for msg in msg_list:
+                                        msg_queue.put(msg)
+                        else:
+                            raise Exception("")
+                        msg_list = []
+                        now_wb_time = wb_user_dict[uid]["last_wb_time"]
+                        for wb in wb_list:
+                            if wb_user_dict[uid]["last_wb_time"] < wb["created_time"]:
+                                now_wb_time = max(now_wb_time, wb["created_time"])
+                                msg_list.append(wb)
+                        if(msg_list):
+                            for msg in msg_list:
+                                msg_queue.put(msg)
+                        logger.info(f"last_wb_time:{wb_user_dict[uid]['last_wb_time']} now:{now_wb_time}")
+                        if now_wb_time > wb_user_dict[uid]["last_wb_time"]:
+                            wb_user_dict[uid]["last_wb_time"] = now_wb_time
+                            save_wb_record()
+                    except:
+                        errmsg = traceback.format_exc()
+                        logger.error(f"UID:{uid}的微博用户详情更新失败！\n{errmsg}")
+                    await asyncio.sleep(random.random()*7 + interval)
+        except:
+            errmsg = traceback.format_exc()
+            logger.error(f"微博用户详情更新进程出错！\n{errmsg}")
         await asyncio.sleep(10)
 
 async def parse_comment(comment: dict, headers: dict) -> dict:
@@ -618,7 +646,7 @@ async def get_user_wb_list(wb_cookie: str, wb_ua: str, wb_uid: str, required_val
         for weibo in weibos:
             weibo_typ = weibo['mblogtype'] # 0=普通 1=热门 2=置顶（推测）
             try:
-                wb_list.append(await parse_weibo(weibo, headers, get_long = False, required_values=required_values))
+                wb_list.append(await parse_weibo(weibo, headers, get_long=False, required_values=required_values))
             except:
                 logger.error(f"获取用户微博列表时解析微博失败！原微博：\n{weibo}")
     else:

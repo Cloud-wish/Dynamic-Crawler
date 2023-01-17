@@ -553,6 +553,9 @@ def load_dyn_record():
             if(not type(dyn_record_dict["user"][uid]["last_dyn_time"]) == int):
                 dyn_record_dict["user"][uid]["last_dyn_time"] = int(datetime.now().timestamp())
                 logger.info(f"UID为{uid}的B站用户动态时间配置不正确，已重设为当前时间")
+            if("cmt_config" in dyn_record_dict["user"][uid] and (not type(dyn_record_dict["user"][uid]["cmt_config"]["last_dyn_cmt_time"]) == int)):
+                dyn_record_dict["user"][uid]["cmt_config"]["last_dyn_cmt_time"] = int(datetime.now().timestamp())
+                logger.info(f"UID为{uid}的B站用户动态评论时间配置不正确，已重设为当前时间")
     except FileNotFoundError:
         dyn_record_dict = {
             "user": dict()

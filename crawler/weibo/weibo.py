@@ -729,6 +729,9 @@ def load_wb_record():
             if(not type(wb_record_dict["user"][uid]["last_wb_time"]) == int):
                 wb_record_dict["user"][uid]["last_wb_time"] = int(datetime.now().timestamp())
                 logger.info(f"UID为{uid}的微博用户动态时间配置不正确，已重设为当前时间")
+            if("cmt_config" in wb_record_dict["user"][uid] and (not type(wb_record_dict["user"][uid]["cmt_config"]["last_wb_cmt_time"]) == int)):
+                wb_record_dict["user"][uid]["cmt_config"]["last_wb_cmt_time"] = int(datetime.now().timestamp())
+                logger.info(f"UID为{uid}的微博用户动态评论时间配置不正确，已重设为当前时间")
     except FileNotFoundError:
         wb_record_dict = {
             "user": dict()

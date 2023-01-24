@@ -2,22 +2,29 @@ from __future__ import annotations
 import asyncio
 import collections
 import copy
-from datetime import datetime
 import json
 import os
 import logging
-from queue import Queue
 import random
 import traceback
-from urllib.parse import urlparse
-import httpx
 import jsons
-from httpx import UnsupportedProtocol
+from datetime import datetime
+from urllib.parse import urlparse
+from queue import Queue
+from http.cookiejar import CookieJar
+from functools import partial
+from httpx import UnsupportedProtocol, ReadTimeout, ConnectError, ConnectTimeout, RemoteProtocolError, ReadError
 from bs4 import BeautifulSoup
+
+from util.logger import init_logger
+from util.network import Network
+from util.config import set_value
+from util.exception import get_exception_list
 
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 wb_record_dict = None
-logger = logging.getLogger("crawler")
+weibo_client: Network = None
+logger = init_logger()
 
 def link_process(link: str) -> str:
     res = urlparse(link)
@@ -54,8 +61,7 @@ async def get_long_weibo(weibo_id: str, headers: dict):
     for i in range(3):
         try:
             url = f'https://m.weibo.cn/detail/{weibo_id}'
-            async with httpx.AsyncClient() as client:
-                html = (await client.get(url, headers = headers, timeout=15)).text
+            html = (await weibo_client.get(url, headers = headers, timeout=25)).text
             html = html[html.find('"status":'):]
             try:
                 html = bracket_match(html)
@@ -95,8 +101,7 @@ def get_created_time(created_at):
     return created_at
 
 async def get_weibo_photo(pic_link, headers):
-    async with httpx.AsyncClient() as client:
-        r = await client.get(pic_link, headers=headers, timeout=10)
+    r = await weibo_client.get(pic_link, headers=headers, timeout=20)
     wb_soup = BeautifulSoup(r.text, features="lxml")
     return wb_soup.find('img').get('src')
 
@@ -237,17 +242,21 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
         return wb_list
     url = 'https://m.weibo.cn/feed/friends?'
     headers = {
-        'Cookie': wb_cookie,
-        'User-Agent': wb_ua,
         'DNT': "1",
         'MWeibo-Pwa': "1",
         'Referer': 'https://m.weibo.cn/'
     }
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, headers=headers, timeout=20)
-    except httpx.ReadTimeout:
-        logger.info(f"微博请求超时！")
+        r = await weibo_client.get(url, headers=headers, timeout=30)
+    except (ReadTimeout, ConnectTimeout, RemoteProtocolError) as e:
+        logger.info(f"微博请求超时:{repr(e)}")
+        return wb_list
+    except (ConnectError, ReadError):
+        exc_list = get_exception_list()
+        if exc_list[0].startswith("ssl.SSLSyscallError") or exc_list[0].startswith("ConnectionResetError"):
+            logger.info(f"微博请求超时:{exc_list[0]}")
+        else:
+            logger.error(f"微博请求出错!错误信息:\n{traceback.format_exc()}")
         return wb_list
     try:
         res = r.json()
@@ -255,23 +264,29 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
         try:
             url_start = r.text.find("https://m.weibo.cn/feed/friends")
             url_end = r.text.find('"', url_start)
-            logger.debug(f"获取到的跳转地址：{r.text[url_start:url_end]}")
             url = r.text[url_start:url_end]
-            async with httpx.AsyncClient() as client:
-                r = await client.get(url, headers=headers, timeout=20)
+            logger.debug(f"获取到的跳转地址：{url}")
+            r = await weibo_client.get(url, headers=headers, timeout=30)
             res = r.json()
-        except httpx.ReadTimeout:
-            logger.info(f"微博请求超时！")
+        except (ReadTimeout, ConnectTimeout, RemoteProtocolError) as e:
+            logger.info(f"微博请求超时:{repr(e)}")
             return wb_list
         except UnsupportedProtocol:
-            logger.error(f"微博跳转出错!URL:\n{url}")
+            logger.error(f"微博请求跳转出错!跳转URL:\n{url}\n原始返回值:\n{r.text}")
+            return wb_list
+        except (ConnectError, ReadError):
+            exc_list = get_exception_list()
+            if exc_list[0].startswith("ssl.SSLSyscallError") or exc_list[0].startswith("ConnectionResetError"):
+                logger.info(f"微博请求超时:{exc_list[0]}")
+            else:
+                logger.error(f"微博请求出错!错误信息:\n{traceback.format_exc()}")
             return wb_list
         except json.decoder.JSONDecodeError:
             try:
                 bs = BeautifulSoup(res.text, features="lxml")
-                logger.error(f"微博解析出错!返回值如下:\n{bs.find('body').text.strip()}")
+                logger.error(f"微博解析出错!返回值:\n{bs.find('body').text.strip()}")
             except:
-                logger.error(f"微博解析出错!返回值如下:\n{r.text}")
+                logger.error(f"微博解析出错!返回值:\n{r.text}")
             return wb_list
     if res['ok']:
         weibos = res['data']['statuses']
@@ -321,6 +336,7 @@ async def listen_weibo(wb_config_dict: dict, msg_queue: Queue):
     interval = wb_config_dict["interval"]
     detail_enable = wb_config_dict["detail_enable"]
     comment_limit = wb_config_dict["comment_limit"]
+    init_network_client(wb_cookie, wb_ua)
     await asyncio.sleep(1)
     logger.info("开始抓取微博...")
     while(True):
@@ -342,25 +358,31 @@ async def get_weibo_user_detail(weibo_ua: str, weibo_cookie: str, uid: str):
     wb_user_dict: dict = wb_record_dict["user"]
     if(len(wb_user_dict) == 0):
         return msg_list
-    headers = {
-        "User-Agent": weibo_ua,
-        "Cookie": weibo_cookie
-    }
-    async with httpx.AsyncClient() as client:
-        res = await client.get(f'https://m.weibo.cn/api/container/getIndex?type=uid&value={uid}&containerid=100505{uid}', headers=headers, timeout=20)
+    try:
+        res = await weibo_client.get(f'https://m.weibo.cn/api/container/getIndex?type=uid&value={uid}&containerid=100505{uid}', timeout=30)
+    except (ReadTimeout, ConnectTimeout, RemoteProtocolError) as e:
+        logger.info(f"微博用户信息请求超时:{repr(e)}")
+        return msg_list
+    except (ConnectError, ReadError):
+        exc_list = get_exception_list()
+        if exc_list[0].startswith("ssl.SSLSyscallError") or exc_list[0].startswith("ConnectionResetError"):
+            logger.info(f"微博用户信息请求超时:{exc_list[0]}")
+        else:
+            logger.error(f"微博用户信息请求出错!错误信息:\n{traceback.format_exc()}")
+        return msg_list
     res.encoding='utf-8'
     res = res.text
     try:
         data = json.loads(res)
         data = data["data"]
     except json.JSONDecodeError:
-        logger.error(f"微博用户详情解析出错!\nUID:{uid}\n返回值如下:\n{res}")
+        logger.error(f"微博用户详情解析出错!\nUID:{uid}\n返回值:\n{res}")
         return msg_list
     try:
         user = parse_weibo_user(data['userInfo'])
         uid = user["uid"]
     except:
-        logger.error(f"微博用户详情解析出错！原用户详情：{data}")
+        logger.error(f"微博用户详情解析出错!原用户详情:\n{data}")
         return []
     update_user(wb_user_dict[uid], "weibo", user, msg_list)
     wb_user_dict[uid]["update_time"] = int(datetime.now().timestamp())
@@ -374,18 +396,19 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
     wb_ua = wb_config_dict["ua"]
     interval = wb_config_dict["detail_interval"]
     wb_user_dict: dict = wb_record_dict["user"]
+    init_network_client(wb_cookie, wb_ua)
     while(True):
         try:
             uid_list = list(wb_record_dict["user"].keys())
-            logger.info(f"微博用户数：{len(uid_list)}")
+            logger.debug(f"微博用户数：{len(uid_list)}")
             for uid in uid_list:
-                logger.info(f'微博列表与用户详情更新 UID：{uid} 当前时间{datetime.now().timestamp()} 记录时间{wb_record_dict["user"][uid].get("update_time", 0)}')
+                logger.debug(f'微博列表与用户详情更新 UID：{uid} 当前时间{datetime.now().timestamp()} 记录时间{wb_record_dict["user"][uid].get("update_time", 0)}')
                 if(datetime.now().timestamp() - wb_record_dict["user"][uid].get("update_time", 0) > 60 * 30): # 30 min
-                    logger.info(f"执行微博列表与用户详情更新 UID：{uid}")
+                    logger.debug(f"执行微博列表与用户详情更新 UID：{uid}")
                     try:
                         res = await get_user_wb_list(wb_cookie, wb_ua, uid)
                         if res["ok"]:
-                            logger.info(f"UID:{uid}的微博用户微博列表更新成功")
+                            logger.debug(f"UID:{uid}的微博用户微博列表更新成功")
                             wb_list = res["wb_list"]
                             if wb_list:
                                 msg_list = []
@@ -393,28 +416,28 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
                                 if(msg_list):
                                     for msg in msg_list:
                                         msg_queue.put(msg)
+                            msg_list = []
+                            now_wb_time = wb_user_dict[uid]["last_wb_time"]
+                            for wb in wb_list:
+                                if wb_user_dict[uid]["last_wb_time"] < wb["created_time"]:
+                                    now_wb_time = max(now_wb_time, wb["created_time"])
+                                    msg_list.append(wb)
+                            if(msg_list):
+                                for msg in msg_list:
+                                    msg_queue.put(msg)
+                            logger.debug(f"last_wb_time:{wb_user_dict[uid]['last_wb_time']} now:{now_wb_time}")
+                            if now_wb_time > wb_user_dict[uid]["last_wb_time"]:
+                                wb_user_dict[uid]["last_wb_time"] = now_wb_time
+                                save_wb_record()
                         else:
-                            raise Exception("")
-                        msg_list = []
-                        now_wb_time = wb_user_dict[uid]["last_wb_time"]
-                        for wb in wb_list:
-                            if wb_user_dict[uid]["last_wb_time"] < wb["created_time"]:
-                                now_wb_time = max(now_wb_time, wb["created_time"])
-                                msg_list.append(wb)
-                        if(msg_list):
-                            for msg in msg_list:
-                                msg_queue.put(msg)
-                        logger.info(f"last_wb_time:{wb_user_dict[uid]['last_wb_time']} now:{now_wb_time}")
-                        if now_wb_time > wb_user_dict[uid]["last_wb_time"]:
-                            wb_user_dict[uid]["last_wb_time"] = now_wb_time
-                            save_wb_record()
+                            logger.info(f"UID:{uid}的微博用户微博列表未成功更新")
                     except:
                         errmsg = traceback.format_exc()
-                        logger.error(f"UID:{uid}的微博用户详情更新失败！\n{errmsg}")
+                        logger.error(f"UID:{uid}的微博用户详情更新出错!错误信息:\n{errmsg}")
                     await asyncio.sleep(random.random()*7 + interval)
         except:
             errmsg = traceback.format_exc()
-            logger.error(f"微博用户详情更新进程出错！\n{errmsg}")
+            logger.error(f"微博用户详情更新进程出错!错误信息:\n{errmsg}")
         await asyncio.sleep(10)
 
 async def parse_comment(comment: dict, headers: dict) -> dict:
@@ -441,8 +464,9 @@ async def get_weibo_comment(weibo_ua: str, weibo_cookie: str, weibo: dict, wb_ui
     last_wb_cmt_time = wb_user_dict[wb_uid]["cmt_config"].get("last_wb_cmt_time", int(datetime.now().timestamp()))
     now_wb_cmt_time = last_wb_cmt_time
     headers = {
-        "User-Agent": weibo_ua,
-        "Cookie": weibo_cookie
+        'DNT': "1",
+        'MWeibo-Pwa': "1",
+        'Referer': 'https://m.weibo.cn/'
     }
     url = 'https://m.weibo.cn/comments/hotflow?'
     params = {
@@ -451,32 +475,40 @@ async def get_weibo_comment(weibo_ua: str, weibo_cookie: str, weibo: dict, wb_ui
         'max_id_type': '0'
     }
     try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, params=params, headers=headers, timeout=15)
+        r = await weibo_client.get(url, params=params, headers=headers, timeout=25)
         res = r.json()
+    except (ReadTimeout, ConnectTimeout, RemoteProtocolError) as e:
+        logger.info(f"微博评论请求超时:{repr(e)}")
+        return 0, cmt_list, now_wb_cmt_time
+    except (ConnectError, ReadError) or exc_list[0].startswith("ConnectionResetError"):
+        exc_list = get_exception_list()
+        if exc_list[0].startswith("ssl.SSLSyscallError"):
+            logger.info(f"微博评论请求超时:{exc_list[0]}")
+        else:
+            logger.error(f"微博评论请求出错!错误信息:\n{traceback.format_exc()}")
+        return 0, cmt_list, now_wb_cmt_time
     except json.decoder.JSONDecodeError as e:
         try:
             logger.debug(f"微博评论解析出错，尝试跳转")
             url_start = r.text.find("https://m.weibo.cn/comments/hotflow?")
             url_end = r.text.find('"', url_start)
             # print(url_start, url_end)
-            logger.debug(f"获取到的跳转地址：{r.text[url_start:url_end]}")
+            logger.debug(f"获取到的跳转地址:{r.text[url_start:url_end]}")
             if(not r.text[url_start:url_end].startswith("http://") and not r.text[url_start:url_end].startswith("https://")):
                 try:
                     bs = BeautifulSoup(r.text, features="lxml")
-                    logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下:\n{bs.find('body').text.strip()}")
+                    logger.error(f"微博评论解析出错!UID：{wb_uid} 返回值:\n{bs.find('body').text.strip()}")
                 except:
-                    logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
+                    logger.error(f"微博评论解析出错!UID：{wb_uid} 返回值：{r.text}")
                 return 0, cmt_list, now_wb_cmt_time
-            async with httpx.AsyncClient() as client:
-                r = await client.get(r.text[url_start:url_end], params=params, headers=headers, timeout=15)
+            r = await weibo_client.get(r.text[url_start:url_end], params=params, headers=headers, timeout=25)
             res = r.json()
         except json.decoder.JSONDecodeError as e:
             try:
                 bs = BeautifulSoup(r.text, features="lxml")
-                logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下:\n{bs.find('body').text}")
+                logger.error(f"微博评论解析出错!UID：{wb_uid} 返回值:\n{bs.find('body').text}")
             except:
-                logger.error(f"微博评论解析出错！UID：{wb_uid}返回值如下：{r.text}")
+                logger.error(f"微博评论解析出错!UID：{wb_uid} 返回值：{r.text}")
             return 0, cmt_list, now_wb_cmt_time
     if res['ok']: # ok为0是没有评论
         comments = res['data']['data']
@@ -509,9 +541,9 @@ async def get_weibo_comment(weibo_ua: str, weibo_cookie: str, weibo: dict, wb_ui
                             cmt_list.append(inner_cmt)
     elif("msg" in res):
         if(not res["msg"] == "快来发表你的评论吧"):
-            logger.debug(f"微博评论请求返回值异常！\nmsg:{res['msg']}")
+            logger.debug(f"微博评论请求返回值异常!\nmsg:{res['msg']}")
     else:
-        logger.error(f"微博评论请求返回值异常！微博ID：{weibo['id']}\n返回值:{json.dumps(res, ensure_ascii=False)}")
+        logger.error(f"微博评论请求返回值异常!微博ID:{weibo['id']} 返回值:\n{json.dumps(res, ensure_ascii=False)}")
         return -1, cmt_list, now_wb_cmt_time
     cmt_list.reverse()
     return 0, cmt_list, now_wb_cmt_time
@@ -523,24 +555,8 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
     wb_ua = wb_config_dict["ua"]
     interval = wb_config_dict["comment_interval"]
     limit = wb_config_dict["comment_limit"]
+    init_network_client(wb_cookie, wb_ua)
     await asyncio.sleep(1)
-    # deprecated
-    # logger.info("更新抓取评论用户的微博列表...")
-    # uid_list = list(wb_record_dict["user"].keys())
-    # for uid in uid_list:
-    #     if("cmt_config" in wb_record_dict["user"][uid]):
-    #         logger.debug(f"执行微博用户微博列表更新\nUID：{uid}")
-    #         try:
-    #             res = await get_user_wb_list(wb_cookie, wb_ua, uid, ["id", "mid", "followed_only"])
-    #             if res["ok"]:
-    #                 wb_record_dict["user"][uid]["cmt_config"]["wb_list"] = res["wb_list"]
-    #                 logger.debug(f"UID:{uid}的微博用户微博列表更新成功")
-    #             else:
-    #                 logger.error(f"UID:{uid}的微博用户微博列表更新失败！")
-    #         except:
-    #             errmsg = traceback.format_exc()
-    #             logger.error(f"UID:{uid}的微博用户微博列表更新失败！错误信息：\n{errmsg}")
-    #         await asyncio.sleep(30)
     logger.info("开始抓取微博评论...")
     while(True):
         uid_list = list(wb_record_dict["user"].keys())
@@ -562,10 +578,11 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                             for msg in msg_list:
                                 msg_queue.put(msg)
                     else:
-                        raise Exception("")
+                        logger.info(f"UID:{uid}的微博用户微博列表未成功更新")
+                        continue
                 except:
                     errmsg = traceback.format_exc()
-                    logger.error(f"UID:{uid}的微博用户微博列表更新失败！\n{errmsg}")
+                    logger.error(f"UID:{uid}的微博用户微博列表更新出错!错误信息:\n{errmsg}")
                     await asyncio.sleep(random.random()*7 + interval)
                     continue
                 await asyncio.sleep(random.random()*3 + 2)
@@ -578,7 +595,7 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                         code, cmt_list, cmt_time = await get_weibo_comment(wb_ua, wb_cookie, weibo, uid)
                         await asyncio.sleep(random.random()*3 + 2)
                         if(code < 0):
-                            logger.error(f"微博评论抓取出错！ID为{weibo['id']}的微博可能已被删除或不可见！")
+                            logger.error(f"微博评论抓取出错, ID为{weibo['id']}的微博可能已被删除或不可见")
                             continue
                         cnt += 1
                         now_wb_cmt_time = max(now_wb_cmt_time, cmt_time)
@@ -587,7 +604,7 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                                 msg_queue.put(cmt)
                     except:
                         errmsg = traceback.format_exc()
-                        logger.error(f"微博评论抓取出错！错误信息：\n{errmsg}")
+                        logger.error(f"微博评论抓取出错!错误信息:\n{errmsg}")
                 wb_record_dict["user"][uid]["cmt_config"]["last_wb_cmt_time"] = now_wb_cmt_time
                 save_wb_record()
                 await asyncio.sleep(random.random()*5 + interval)
@@ -598,45 +615,45 @@ async def wb_follow(uid: str, config_dict: dict):
     xsrf_token = ""
     wb_url = f"https://m.weibo.cn/profile/{uid}"
     headers = {
-        "User-Agent": config_dict["ua"],
-        "Cookie": config_dict["cookie"],
-        "x-xsrf-token": xsrf_token,
-        "x-requested-with": "XMLHttpRequest",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "sec-fetch-dest": "empty",
-        "referer": wb_url,
-        "dnt": "1",
-        "mweibo-pwa": "1"
+        'DNT': "1",
+        'MWeibo-Pwa': "1",
+        'Referer': wb_url
     }
-    async with httpx.AsyncClient(headers=headers) as client:
-        await client.get(url=wb_url)
-        xsrf_token = client.cookies["XSRF-TOKEN"]
-        params = {
-            "uid": uid,
-            "st": xsrf_token,
-            "_spr": "screen:412x915" # S20 Ultra
-        }
-        res = await client.post(url="https://m.weibo.cn/api/friendships/create", params=params)
-        res = res.json()
-        logger.debug(f"微博关注用户接口返回值:{json.dumps(res, ensure_ascii=False)}")
-        return res
+    await weibo_client.get(url=wb_url, headers=headers)
+    xsrf_token = weibo_client.cookies["XSRF-TOKEN"]
+    params = {
+        "uid": uid,
+        "st": xsrf_token,
+        "_spr": "screen:412x915" # S20 Ultra
+    }
+    res = await weibo_client.post(url="https://m.weibo.cn/api/friendships/create", params=params)
+    res = res.json()
+    logger.debug(f"微博关注用户接口返回值:{json.dumps(res, ensure_ascii=False)}")
+    return res
 
 async def get_user_wb_list(wb_cookie: str, wb_ua: str, wb_uid: str, required_values: list[str] = None) -> dict:
     def wb_time_key(weibo) -> int:
         return int(get_created_time(weibo['created_at']).timestamp())
     headers = {
-        'Cookie': wb_cookie,
-        'User-Agent': wb_ua,
         'DNT': "1",
         'MWeibo-Pwa': "1",
         'Referer': 'https://m.weibo.cn/'
     }
     url = f'https://m.weibo.cn/api/container/getIndex?containerid=107603{wb_uid}'
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url, headers=headers, timeout=20)
-    res = r.json()
     wb_list = []
+    try:
+        r = await weibo_client.get(url, headers=headers, timeout=30)
+    except (ReadTimeout, ConnectTimeout, RemoteProtocolError) as e:
+        logger.info(f"微博列表请求超时:{repr(e)}")
+        return {"ok": False, "wb_list": wb_list}
+    except (ConnectError, ReadError) or exc_list[0].startswith("ConnectionResetError"):
+        exc_list = get_exception_list()
+        if exc_list[0].startswith("ssl.SSLSyscallError"):
+            logger.info(f"微博列表请求超时:{exc_list[0]}")
+        else:
+            logger.error(f"微博列表请求出错!错误信息:\n{traceback.format_exc()}")
+        return {"ok": False, "wb_list": wb_list}
+    res = r.json()
     if res['ok']:
         weibos = []
         for w in res['data']['cards']:
@@ -648,9 +665,9 @@ async def get_user_wb_list(wb_cookie: str, wb_ua: str, wb_uid: str, required_val
             try:
                 wb_list.append(await parse_weibo(weibo, headers, get_long=False, required_values=required_values))
             except:
-                logger.error(f"获取用户微博列表时解析微博失败！原微博：\n{weibo}")
+                logger.error(f"获取用户微博列表时解析微博出错!原微博:\n{weibo}")
     else:
-        logger.error(f"未成功获取UID：{wb_uid}用户的微博列表！返回值：\n{json.dumps(res, ensure_ascii=False)}")
+        logger.error(f"未成功获取UID:{wb_uid}用户的微博列表!返回值:\n{json.dumps(res, ensure_ascii=False)}")
     return {"ok": res['ok'], "wb_list": wb_list}
 
 async def add_wb_user(wb_uid: str, config_dict: dict) -> tuple[bool, str]:
@@ -743,6 +760,22 @@ def load_wb_record():
             "user": dict()
         }
         logger.error(f"读取微博动态记录文件错误\n{traceback.format_exc()}")
+
+def save_wb_cookie(cookies: CookieJar):
+    cookie_dict = dict()
+    cookie_str = ""
+    for cookie in cookies:
+        if (not cookie.name in cookie_dict) or (len(cookie.domain) != 0):
+            cookie_dict[cookie.name] = cookie.value
+    for k, v in cookie_dict.items():
+        cookie_str += f"{k}={v};"
+    set_value("weibo", "cookie", cookie_str)
+
+def init_network_client(cookie_str: str = None, ua_str: str = None):
+    global weibo_client
+    if weibo_client is None:
+        weibo_client = Network(cookie_str, ua_str)
+        weibo_client.set_save_cookie_func(partial(save_wb_cookie))
 
 def save_wb_record():
     with open(record_path, "w", encoding="UTF-8") as f:

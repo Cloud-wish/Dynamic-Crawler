@@ -1,50 +1,29 @@
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
-import configparser
 import asyncio
 import jsons
 import threading
 import queue
-import os
+import logging
 import websockets
 import requests
 import traceback
-import logging
-from logging.handlers import TimedRotatingFileHandler
 from aiohttp import web
 from aiohttp.web_request import Request
+
+import util.config
+from util.logger import init_logger
 from crawler.weibo.weibo import listen_weibo, add_wb_user, add_wb_cmt_user, remove_wb_user, remove_wb_cmt_user, listen_weibo_user_detail, listen_weibo_comment
 from crawler.bili_live.bili_live import listen_live, add_live_user, remove_live_user
 from crawler.bili_dynamic.bili_dynamic import listen_dynamic, add_dyn_user, add_dyn_cmt_user, remove_dyn_user, remove_dyn_cmt_user, listen_bili_user_detail, listen_dynamic_comment
 
+logger: logging.Logger = None
 routes = web.RouteTableDef()
 msg_queue = queue.Queue(maxsize=-1) # infinity length
-config_dict = dict()
 push_config_dict = dict()
 ws_conn_dict = dict()
 ws_server = None
-logger: logging.Logger = None
-LOGGER_NAME = "crawler"
-LOGGER_PRINT_FORMAT = "\033[1;33m%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)s) %(funcName)s:\033[0m\n%(message)s"
-LOGGER_FILE_FORMAT = "%(asctime)s [%(levelname)s] (%(filename)s:%(lineno)s) %(funcName)s:\n%(message)s"
-logging.basicConfig(format=LOGGER_PRINT_FORMAT)
-log_path = os.path.join(os.path.dirname(__file__), "logs", f"{LOGGER_NAME}.log")
-
-def init_logger():
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    global logger
-    logger = logging.getLogger(LOGGER_NAME)
-    handler = TimedRotatingFileHandler(log_path, when="midnight", interval=1, encoding="UTF-8")
-    handler.setFormatter(logging.Formatter(LOGGER_FILE_FORMAT))
-    # 从配置文件接收是否打印debug日志
-    if config_dict["logger"]["debug"]:
-        logger.setLevel(level=logging.DEBUG)
-        handler.level = logging.DEBUG
-    else:
-        logger.setLevel(logging.INFO)
-        handler.level = logging.INFO
-    logger.addHandler(handler)
 
 def cookie_to_dict(cookie: str):
     cookie_list = cookie.split(";")
@@ -55,27 +34,8 @@ def cookie_to_dict(cookie: str):
     return cookie_dict
 
 def load_config():
-    cf = configparser.ConfigParser(interpolation=None, inline_comment_prefixes=["#"], comment_prefixes=["#"])
-    cf.read(f"config.ini", encoding="UTF-8")
-    global config_dict, push_config_dict
-    for name, section in cf.items():
-        config_dict[name] = dict()
-        for key, value in section.items():
-            try:
-                value = int(value)
-            except:
-                pass
-            if(value == "true"):
-                value = True
-            elif(value == "false"):
-                value = False
-            config_dict[name][key] = value
-    if(config_dict["bili_dyn"]["enable"]):
-        cookie_dict = cookie_to_dict(config_dict["bili_dyn"]["cookie"])
-        config_dict["bili_dyn"]["bili_jct"] = cookie_dict["bili_jct"]
-        config_dict["bili_dyn"]["buvid3"] = cookie_dict["buvid3"]
-        config_dict["bili_dyn"]["sessdata"] = cookie_dict["SESSDATA"]
-        config_dict["bili_dyn"]["dedeuserid"] = cookie_dict["DedeUserID"]
+    global push_config_dict, config_dict
+    config_dict = util.config.get_config_dict()
     try:
         with open("push_config.json", "r", encoding="UTF-8") as f:
             push_config_dict = jsons.loads(f.read())
@@ -247,7 +207,7 @@ def send_msg(client_name: str, msg: dict):
     http_url = push_config_dict["clients"][client_name]
     ws_conn = ws_conn_dict.get(client_name, None)
     if(ws_conn is None and http_url == "websocket"):
-        logger.error(f"client_name:{client_name} 未连接Websocket服务，无法推送消息！\n消息内容：\n{jsons.dumps(msg, ensure_ascii=False)}")
+        logger.error(f"client_name:{client_name} 未连接Websocket服务,无法推送消息!\n消息内容:\n{jsons.dumps(msg, ensure_ascii=False)}")
         return
     if(not ws_conn is None):
         try:
@@ -255,13 +215,13 @@ def send_msg(client_name: str, msg: dict):
             return
         except:
             errmsg = traceback.format_exc()
-            logger.error(f"Websocket消息推送发生错误！\nclient_name:{client_name}\n{errmsg}")
+            logger.error(f"Websocket消息推送发生错误!\nclient_name:{client_name}\n{errmsg}")
     if(not http_url == "websocket"):
         try:
             resp = requests.post(url=http_url, json=msg)
         except:
             errmsg = traceback.format_exc()
-            logger.error(f"HTTP消息推送发生错误！\nclient_name:{client_name} url:{http_url}\n{errmsg}")
+            logger.error(f"HTTP消息推送发生错误!\nclient_name:{client_name} url:{http_url}\n{errmsg}")
 
 def msg_sender():
     asyncio.set_event_loop(asyncio.new_event_loop())
@@ -271,7 +231,7 @@ def msg_sender():
         msg_type = msg["type"]
         subtype = msg["subtype"]
         uid = msg["user"]["uid"]
-        logger.debug(f"消息推送线程接收到消息：\n{jsons.dumps(msg, ensure_ascii=False)}")
+        logger.debug(f"消息推送线程接收到消息:\n{jsons.dumps(msg, ensure_ascii=False)}")
         if not subtype in push_config_dict[msg_type]:
             for client_name in push_config_dict[msg_type][uid]:
                 send_msg(client_name, msg)
@@ -315,13 +275,21 @@ async def receiver(websocket):
     except websockets.exceptions.ConnectionClosedOK:
         logger.debug(f"client_name:{client_name}的Websocket连接正常关闭")
     except websockets.exceptions.ConnectionClosedError as e:
-        logger.error(f"client_name:{client_name}的Websocket连接异常关闭！\n错误详情：{str(e)}")
+        logger.error(f"client_name:{client_name}的Websocket连接异常关闭!错误信息:\n{str(e)}")
     except:
         errmsg = traceback.format_exc()
-        logger.error(f"client_name:{client_name}的Websocket连接发生错误！\n错误详情：{errmsg}")
+        logger.error(f"client_name:{client_name}的Websocket连接发生错误!错误信息:\n{errmsg}")
     finally:
         if(not client_name is None):
             del ws_conn_dict[client_name]
+
+async def cookie_update(interval: int):
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            util.config.save_config()
+        except:
+            logger.error(f"Cookie保存至配置文件时出错!错误信息:\n{traceback.format_exc()}")
 
 async def start_tasks(app):
     if(config_dict["bili_live"]["enable"]):
@@ -342,6 +310,8 @@ async def start_tasks(app):
         global ws_server
         ws_server = await websockets.serve(receiver, config_dict["websocket"]["host"], config_dict["websocket"]["port"])
         logger.info("Websocket服务已开启")
+    if(config_dict["cookie_update"]["enable"]):
+        app["cookie_update"] = asyncio.create_task(cookie_update(config_dict["cookie_update"]["interval"]))
 
 async def cleanup_tasks(app):
     global ws_server
@@ -351,7 +321,8 @@ async def cleanup_tasks(app):
 
 def main():
     load_config()
-    init_logger()
+    global logger
+    logger = init_logger()
 
     sender = threading.Thread(target = msg_sender)
     sender.start()

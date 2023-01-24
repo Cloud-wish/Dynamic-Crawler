@@ -16,9 +16,11 @@ from bilibili_api.utils.Credential import Credential
 from bilibili_api.exceptions.ResponseCodeException import ResponseCodeException
 from bilibili_api.comment import CommentResourceType, OrderType, get_comments
 
+from util.logger import init_logger
+
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 dyn_record_dict = None
-logger = logging.getLogger("crawler")
+logger = init_logger()
 
 def link_process(link: str) -> str:
     res = urlparse(link)

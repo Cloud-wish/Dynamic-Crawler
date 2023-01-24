@@ -11,9 +11,11 @@ import httpx
 import json
 import logging
 
+from util.logger import init_logger
+
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 live_record_dict = None
-logger = logging.getLogger("crawler")
+logger = init_logger()
 
 def link_process(link: str) -> str:
     if len(link) == 0:

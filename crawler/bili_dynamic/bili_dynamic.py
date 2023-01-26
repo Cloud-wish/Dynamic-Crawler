@@ -408,7 +408,7 @@ async def listen_dynamic_comment(dyn_config_dict: dict, msg_queue: Queue):
         uid_list = list(dyn_record_dict["user"].keys())
         is_cmt = False
         for uid in uid_list:
-            if("cmt_config" in dyn_record_dict["user"][uid]):
+            if(uid in dyn_record_dict["user"] and "cmt_config" in dyn_record_dict["user"][uid]):
                 is_cmt = True
                 logger.debug(f"执行B站用户评论抓取 UID：{uid}")
                 cnt = 0

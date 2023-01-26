@@ -5,8 +5,8 @@ from http.cookiejar import CookieJar
 from functools import partial
 from typing import Any
 
-def cookies_to_dict(cookies_str: str):
-    cookies_list = cookies_str.split(";")
+def cookie_str_to_dict(cookie_str: str):
+    cookies_list = cookie_str.split(";")
     if len(cookies_list) != 0 and len(cookies_list[-1]) == 0:
         cookies_list.pop()
     cookies = dict()
@@ -14,6 +14,14 @@ def cookies_to_dict(cookies_str: str):
         cookie_pair = c.lstrip().rstrip().split("=")
         cookies[cookie_pair[0]] = cookie_pair[1]
     return cookies
+
+def cookiejar_to_dict(cookiejar: CookieJar):
+    cookie_dict = dict()
+    for cookie in cookiejar:
+        cookie_name = cookie.name
+        if (not cookie_name in cookie_dict) or (len(cookie.domain) != 0):
+            cookie_dict[cookie_name] = cookie.value
+    return cookie_dict
 
 class Network:
     def __init__(self, cookie_str: str = None, ua_str: str = None) -> None:
@@ -37,7 +45,7 @@ class Network:
             pass
 
     def set_cookie(self, cookie_str: str):
-        self._client.cookies = httpx.Cookies(cookies_to_dict(cookie_str))
+        self._client.cookies = httpx.Cookies(cookie_str_to_dict(cookie_str))
 
     def set_ua(self, ua_str: str):
         self._client.headers.update({"User-Agent": ua_str})
@@ -56,6 +64,17 @@ class Network:
 
     async def get(self, url: str, headers: dict[str,str] = None, params: dict[str,Any] = None, timeout: int = 30) -> httpx.Response:
         resp = await self._client.get(
+            url=url,
+            headers=headers,
+            params=params,
+            timeout=timeout
+            )
+        if not self._save_cookie_func is None:
+            self._save_cookie_func(self.get_cookiejar())
+        return resp
+    
+    async def post(self, url: str, headers: dict[str,str] = None, params: dict[str,Any] = None, timeout: int = 30) -> httpx.Response:
+        resp = await self._client.post(
             url=url,
             headers=headers,
             params=params,

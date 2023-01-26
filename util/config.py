@@ -1,7 +1,7 @@
 from __future__ import annotations
 import configparser
 from typing import Any
-from .network import cookies_to_dict
+from .network import cookie_str_to_dict
 
 CONFIG_PATH = "config.ini"
 # config_dict: dict[str,Any] = None
@@ -12,7 +12,7 @@ def get_config_dict() -> dict[str,Any]:
     return config_dict
 
 def bili_cookie_process():
-    cookie_dict = cookies_to_dict(config_dict["bili_dyn"]["cookie"])
+    cookie_dict = cookie_str_to_dict(config_dict["bili_dyn"]["cookie"])
     config_dict["bili_dyn"]["bili_jct"] = cookie_dict["bili_jct"]
     config_dict["bili_dyn"]["buvid3"] = cookie_dict["buvid3"]
     config_dict["bili_dyn"]["sessdata"] = cookie_dict["SESSDATA"]

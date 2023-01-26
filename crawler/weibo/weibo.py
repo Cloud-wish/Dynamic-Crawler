@@ -4,7 +4,6 @@ import collections
 import copy
 import json
 import os
-import logging
 import random
 import traceback
 import jsons
@@ -17,7 +16,7 @@ from httpx import UnsupportedProtocol, ReadTimeout, ConnectError, ConnectTimeout
 from bs4 import BeautifulSoup
 
 from util.logger import init_logger
-from util.network import Network
+from util.network import Network, cookiejar_to_dict
 from util.config import set_value
 from util.exception import get_exception_list
 
@@ -264,15 +263,15 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
         try:
             url_start = r.text.find("https://m.weibo.cn/feed/friends")
             url_end = r.text.find('"', url_start)
+            if url_start == -1 or url_end == -1:
+                logger.info(f"微博请求跳转出错!原始返回值:{r.text}")
+                return wb_list
             url = r.text[url_start:url_end]
             logger.debug(f"获取到的跳转地址：{url}")
             r = await weibo_client.get(url, headers=headers, timeout=30)
             res = r.json()
         except (ReadTimeout, ConnectTimeout, RemoteProtocolError) as e:
             logger.info(f"微博请求超时:{repr(e)}")
-            return wb_list
-        except UnsupportedProtocol:
-            logger.error(f"微博请求跳转出错!跳转URL:\n{url}\n原始返回值:\n{r.text}")
             return wb_list
         except (ConnectError, ReadError):
             exc_list = get_exception_list()
@@ -287,6 +286,9 @@ async def get_weibo(wb_cookie: str, wb_ua: str, detail_enable: bool, comment_lim
                 logger.error(f"微博解析出错!返回值:\n{bs.find('body').text.strip()}")
             except:
                 logger.error(f"微博解析出错!返回值:\n{r.text}")
+            return wb_list
+        except:
+            logger.error(f"微博请求跳转出错!跳转URL:\n{url}\n原始返回值:\n{r.text}")
             return wb_list
     if res['ok']:
         weibos = res['data']['statuses']
@@ -562,7 +564,7 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
         uid_list = list(wb_record_dict["user"].keys())
         is_cmt = False
         for uid in uid_list:
-            if("cmt_config" in wb_record_dict["user"][uid]):
+            if(uid in wb_record_dict["user"] and "cmt_config" in wb_record_dict["user"][uid]):
                 is_cmt = True
                 logger.debug(f"执行微博用户评论抓取 UID：{uid}")
                 cnt = 0
@@ -620,7 +622,7 @@ async def wb_follow(uid: str, config_dict: dict):
         'Referer': wb_url
     }
     await weibo_client.get(url=wb_url, headers=headers)
-    xsrf_token = weibo_client.cookies["XSRF-TOKEN"]
+    xsrf_token = cookiejar_to_dict(weibo_client.get_cookiejar())["XSRF-TOKEN"]
     params = {
         "uid": uid,
         "st": xsrf_token,
@@ -762,11 +764,8 @@ def load_wb_record():
         logger.error(f"读取微博动态记录文件错误\n{traceback.format_exc()}")
 
 def save_wb_cookie(cookies: CookieJar):
-    cookie_dict = dict()
+    cookie_dict = cookiejar_to_dict(cookies)
     cookie_str = ""
-    for cookie in cookies:
-        if (not cookie.name in cookie_dict) or (len(cookie.domain) != 0):
-            cookie_dict[cookie.name] = cookie.value
     for k, v in cookie_dict.items():
         cookie_str += f"{k}={v};"
     set_value("weibo", "cookie", cookie_str)

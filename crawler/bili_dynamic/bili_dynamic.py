@@ -343,10 +343,12 @@ async def listen_dynamic(dyn_config_dict: dict, msg_queue: Queue):
         logger.debug("执行抓取B站动态")
         try:
             dyn_list = await get_dynamic(bili_ua, bili_cookie, detail_enable, comment_limit)
-            logger.debug(f"获取的B站动态列表：{dyn_list}")
             if(dyn_list):
+                logger.info(f"获取的B站动态列表：{dyn_list}")
                 for dyn in dyn_list:
                     msg_queue.put(dyn)
+            else:
+                logger.debug(f"获取的B站动态列表：{dyn_list}")
         except:
             errmsg = traceback.format_exc()
             logger.error(f"B站动态抓取出错!\n{errmsg}")

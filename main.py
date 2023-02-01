@@ -226,18 +226,22 @@ def send_msg(client_name: str, msg: dict):
 def msg_sender():
     asyncio.set_event_loop(asyncio.new_event_loop())
     while True:
-        msg = msg_queue.get(block = True, timeout = None)
-        msg_queue.task_done()
-        msg_type = msg["type"]
-        subtype = msg["subtype"]
-        uid = msg["user"]["uid"]
-        logger.debug(f"消息推送线程接收到消息:\n{jsons.dumps(msg, ensure_ascii=False)}")
-        if not subtype in push_config_dict[msg_type]:
-            for client_name in push_config_dict[msg_type][uid]:
-                send_msg(client_name, msg)
-        else:
-            for client_name in push_config_dict[msg_type][subtype][uid]:
-                send_msg(client_name, msg)
+        try:
+            msg = msg_queue.get(block = True, timeout = None)
+            msg_queue.task_done()
+            msg_type = msg["type"]
+            subtype = msg["subtype"]
+            uid = msg["user"]["uid"]
+            logger.debug(f"消息推送线程接收到消息:\n{msg}")
+            if not subtype in push_config_dict[msg_type]:
+                for client_name in push_config_dict[msg_type][uid]:
+                    send_msg(client_name, msg)
+            else:
+                for client_name in push_config_dict[msg_type][subtype][uid]:
+                    send_msg(client_name, msg)
+        except:
+            errmsg = traceback.format_exc()
+            logger.error(f"消息推送线程发生错误!错误信息:{errmsg}\n消息内容:{msg}")
 
 async def receiver(websocket):
     global ws_conn_dict

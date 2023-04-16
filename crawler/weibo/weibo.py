@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 
 from util.logger import init_logger
 from util.network import Network, cookiejar_to_dict
-from util.config import set_value
+from util.config import set_value, get_config_dict
 from util.exception import get_exception_list
 
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
@@ -348,6 +348,7 @@ async def listen_weibo(wb_config_dict: dict, msg_queue: Queue):
             logger.debug(f"获取的微博列表：{wb_list}")
             if(wb_list):
                 for wb in wb_list:
+                    attach_cookie(wb)
                     msg_queue.put(wb)
         except:
             errmsg = traceback.format_exc()
@@ -417,6 +418,7 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
                                 update_user(wb_record_dict["user"][uid], "weibo", wb_list[0]["user"], msg_list)
                                 if(msg_list):
                                     for msg in msg_list:
+                                        attach_cookie(msg)
                                         msg_queue.put(msg)
                             msg_list = []
                             now_wb_time = wb_user_dict[uid]["last_wb_time"]
@@ -426,6 +428,7 @@ async def listen_weibo_user_detail(wb_config_dict: dict, msg_queue: Queue):
                                     msg_list.append(wb)
                             if(msg_list):
                                 for msg in msg_list:
+                                    attach_cookie(msg)
                                     msg_queue.put(msg)
                             logger.debug(f"last_wb_time:{wb_user_dict[uid]['last_wb_time']} now:{now_wb_time}")
                             if now_wb_time > wb_user_dict[uid]["last_wb_time"]:
@@ -578,6 +581,7 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                         update_user(wb_record_dict["user"][uid], "weibo", wb_list[0]["user"], msg_list)
                         if(msg_list):
                             for msg in msg_list:
+                                attach_cookie(msg)
                                 msg_queue.put(msg)
                     else:
                         logger.info(f"UID:{uid}的微博用户微博列表未成功更新")
@@ -603,6 +607,7 @@ async def listen_weibo_comment(wb_config_dict: dict, msg_queue: Queue):
                         now_wb_cmt_time = max(now_wb_cmt_time, cmt_time)
                         if(cmt_list):
                             for cmt in cmt_list:
+                                attach_cookie(cmt)
                                 msg_queue.put(cmt)
                     except:
                         errmsg = traceback.format_exc()
@@ -769,6 +774,12 @@ def save_wb_cookie(cookies: CookieJar):
     for k, v in cookie_dict.items():
         cookie_str += f"{k}={v};"
     set_value("weibo", "cookie", cookie_str)
+
+def attach_cookie(msg: dict) -> None:
+    cookie = get_config_dict()["weibo"]["cookie"]
+    ua = get_config_dict()["weibo"]["ua"]
+    msg["cookie"] = cookie
+    msg["ua"] = ua
 
 def init_network_client(cookie_str: str = None, ua_str: str = None):
     global weibo_client

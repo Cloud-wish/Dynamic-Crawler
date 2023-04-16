@@ -255,9 +255,9 @@ async def receiver(websocket):
                 cmd_type = params["type"]
                 if(cmd_type == "init"):
                     if(not client_name is None):
-                        resp = {"code": 11, "msg": "Duplicate websocket initialization"}
+                        resp = {"code": 12, "msg": "Duplicate websocket initialization"}
                     elif(_client_name in ws_conn_dict and ws_conn_dict[_client_name].open):
-                        resp = {"code": 12, "msg": "Client name already exists"}
+                        resp = {"code": 13, "msg": "Client name already exists"}
                     else:
                         client_name = _client_name
                         ws_conn_dict[client_name] = websocket
@@ -267,13 +267,13 @@ async def receiver(websocket):
                         save_push_config()
                 elif(cmd_type == "exit"):
                     if(client_name is None):
-                        resp = {"code": 13, "msg": "Not initialized"}
+                        resp = {"code": 14, "msg": "Not initialized"}
                     else:
                         del ws_conn_dict[client_name]
                         await websocket.close()
                         return
                 else:
-                    resp = {"code": 14, "msg": "Illegal command type"}
+                    resp = {"code": 15, "msg": "Illegal command type"}
                 logger.debug(f"Websocket服务收到{cmd_type}命令\nparams:{jsons.dumps(params, ensure_ascii=False)}\nresp:{jsons.dumps(resp, ensure_ascii=False)}")
             await websocket.send(jsons.dumps(resp))
     except websockets.exceptions.ConnectionClosedOK:

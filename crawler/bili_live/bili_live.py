@@ -63,7 +63,7 @@ def update_user(record: dict, typ: str, user: dict, msg_list: list):
                 "pre": value,
                 "now": _user[key]
             })
-            logger.info(f"UID:{user['uid']}的B站直播状态 {key}:{value} -> {_user[key]}")
+            logger.info(f"{user['name']}的B站直播状态 {key}:{value} -> {_user[key]}")
         elif not key in _user:
             _user[key] = value
             user[key] = value

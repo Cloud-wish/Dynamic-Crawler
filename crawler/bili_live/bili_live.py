@@ -94,6 +94,7 @@ async def get_live(uid_list: list[str]):
                 continue
             else:
                 user = copy.deepcopy(live_user_dict[live_uid]["user"])
+                user["uid"] = live_uid # 记录中无UID, 需要补充
                 if user.get("status", "0") == "1":
                     user["status"] = "0" # 设置为下播
             if not live_uid in unknown_uid_set:

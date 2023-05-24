@@ -1,0 +1,7 @@
+aiohttp==3.8.1
+beautifulsoup4==4.11.2
+bilibili_api_python==12.5.2
+httpx==0.23.0
+jsons==1.6.3
+requests==2.22.0
+websockets==10.1

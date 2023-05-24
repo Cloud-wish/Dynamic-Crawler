@@ -292,6 +292,7 @@ async def cookie_update(interval: int):
         await asyncio.sleep(interval)
         try:
             util.config.save_config()
+            logger.debug("Cookie保存完成")
         except:
             logger.error(f"Cookie保存至配置文件时出错!错误信息:\n{traceback.format_exc()}")
 

@@ -10,6 +10,8 @@ _自动获取微博/哔哩哔哩动态/哔哩哔哩直播状态更新_
 
 ## 使用
 ### 启动
+Python版本为3.8
+
 `python main.py`
 ### HTTP API
 [文档](https://github.com/Cloud-wish/Dynamic-Crawler/blob/main/docs/HTTP_API.md)

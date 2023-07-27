@@ -228,6 +228,12 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
         now_dyn_time_dict[dyn_uid] = dyn_user_dict[dyn_uid]["last_dyn_time"]
     for card in cards_data:
         try:
+            if type(card["card"]) == str:
+                card["card"] = json.loads(card["card"])
+            # b站bug: user_profile中的头像可能为旧头像
+            if card["card"].get("user",{}).get("head_url"):
+                card['desc']['user_profile']['info']['face'] = card["card"]["user"]["head_url"]
+            
             user = parse_dyn_user(card['desc']['user_profile'])
             uid = user['uid']
             created_time = int(card['desc']['timestamp'])
@@ -346,6 +352,9 @@ async def listen_dynamic(dyn_config_dict: dict, msg_queue: Queue):
             if(dyn_list):
                 logger.info(f"获取的B站动态列表：{dyn_list}")
                 for dyn in dyn_list:
+                    # attach_cookie(dyn)
+                    dyn["ua"] = bili_ua
+                    dyn["cookie"] = bili_cookie
                     msg_queue.put(dyn)
             else:
                 logger.debug(f"获取的B站动态列表：{dyn_list}")

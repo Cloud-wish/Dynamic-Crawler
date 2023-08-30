@@ -501,7 +501,7 @@ async def add_dyn_user(dyn_uid: str, config_dict: dict) -> dict:
             }
             save_dyn_record()
         except ResponseCodeException as e:
-            if(e.code != 22001):
+            if(e.code != 22001 and e.code != 22014):
                 if(e.code == -101):
                     logger.error(f"B站Cookie已经过期，请更新！")
                 else:

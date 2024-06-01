@@ -12,7 +12,7 @@ import httpx
 import json
 from bs4 import BeautifulSoup
 from bilibili_api.user import User, RelationType
-from bilibili_api.utils.Credential import Credential
+from bilibili_api import Credential
 from bilibili_api.exceptions.ResponseCodeException import ResponseCodeException
 from bilibili_api.comment import CommentResourceType, OrderType, get_comments
 
@@ -40,11 +40,10 @@ def trim_dict(data: dict[str], required_values: list[str] = None, excluded_value
     return res
 
 def parse_dyn_user(user: dict) -> dict:
-    user_info = user.get("info", {})
     res = {
-        "uid": user_info.get("uid"),
-        "name": user_info.get("uname"),
-        "avatar": user_info.get("face"),
+        "uid": user.get("mid"),
+        "name": user.get("name"),
+        "avatar": user.get("face"),
         "desc": user.get("sign")
     }
     if res["uid"]:
@@ -90,83 +89,79 @@ def get_dyn_oid_type(card: dict) -> tuple(int, CommentResourceType):
         dyn_oid = card["desc"]["rid"]
     return (dyn_oid, dyn_type.value)
 
-async def parse_bili_dyn_content(dyn_typ: int, content: dict) -> dict:
+async def parse_bili_dyn_content(dyn_typ: str, content: dict, orig: dict = None) -> dict:
     res = dict()
-    if dyn_typ == 2:  # 带图片动态
-        dyn_text = content['item']['description']
-        pic_list = content['item']['pictures']
+    if dyn_typ == "DYNAMIC_TYPE_DRAW":  # 带图片动态
+        dyn_text = content['desc']['text']
+        pic_list = content['major']['draw']['items']
         pic_src_list = list()
         for pic in pic_list:
-            pic_src_list.append(pic['img_src'])
+            pic_src_list.append(pic['src'])
         res = {
             "text": dyn_text,
             "pics": pic_src_list
         }
-    elif dyn_typ == 4:  # 纯文字动态
-        dyn_text = content['item']['content']
+    elif dyn_typ == "DYNAMIC_TYPE_WORD":  # 纯文字动态
+        dyn_text = content['desc']['text']
         res = {
             "text": dyn_text,
         }
-    elif dyn_typ == 64:  # 文章
-        cvid = str(content['id']) # 文章id
-        title = content['title']
-        summary = content['summary']
-        cover_pic = content['image_urls'][0]
+    elif dyn_typ == "DYNAMIC_TYPE_ARTICLE":  # 文章
+        title = content['major']['opus']['title']
+        summary = content['major']['opus']['summary']['text']
+        cover_pic = content['major']['opus']['pics'][0]['url']
         res = {
             "title": title,
             "desc": summary,
             "cover_pic": cover_pic,
-            "link": f"https://www.bilibili.com/read/cv{cvid}"
+            "link": content['major']['opus']['jump_url'][2:] # 去掉开头的"//"
         }
-    elif dyn_typ == 8:  # 投稿视频
-        title = content['title']
-        cover_pic = content['pic']
-        video_desc = content['desc']
+    elif dyn_typ == "DYNAMIC_TYPE_AV":  # 投稿视频
+        title = content['major']['archive']['title']
+        cover_pic = content['major']['archive']['cover']
+        video_desc = content['major']['archive']['desc']
         res = {
             "title": title,
             "desc": video_desc,
             "cover_pic": cover_pic,
+            "link": content['major']['archive']['jump_url'][2:] # 去掉开头的"//"
         }
-    elif dyn_typ == 1:  # 转发动态
-        dyn_text = content['item']['content']
-        orig_typ = content['item']['orig_type']
+    elif dyn_typ == "DYNAMIC_TYPE_FORWARD":  # 转发动态
+        dyn_text = content['desc']['text']
+        orig_typ = orig['type']
         res = {
             "text": dyn_text,
             "retweet": {}
         }
-        if(orig_typ in [1,2,4,8,64]):
-            orig_content = json.loads(content['origin'])
-            res["retweet"] = await parse_bili_dyn_content(orig_typ, orig_content)
+        if(orig_typ in ["DYNAMIC_TYPE_DRAW", "DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_ARTICLE", "DYNAMIC_TYPE_AV"]):
+            res["retweet"] = await parse_bili_dyn_content(orig_typ, orig["modules"]["module_dynamic"])
         res["retweet"]["dyn_type"] = orig_typ
         res["retweet"]["is_retweet"] = True
-        res["retweet"]["user"] = parse_dyn_user(content.get('origin_user', {}))
+        res["retweet"]["user"] = parse_dyn_user(content['orig']['modules']['module_author'])
     return res
 
-async def parse_bili_dyn(card: dict) -> dict:
-    if type(card["card"]) == str:
-        card["card"] = json.loads(card["card"])
-    created_time = card['desc']['timestamp']
-    dyn_id = str(card['desc']['dynamic_id'])
-    dyn_typ = card['desc']['type']
-    dyn_oid, oid_type = get_dyn_oid_type(card)
+async def parse_bili_dyn(card: dict, user: dict) -> dict:
+    created_time = card['modules']['module_author']['pub_ts']
+    dyn_id = card['id_str']
+    dyn_typ = card['type']
+    # dyn_oid, oid_type = get_dyn_oid_type(card)
     res = {
         "type": "bili_dyn",
         "subtype": "dynamic",
         "dyn_type": dyn_typ,
         "id": dyn_id,
-        "user": parse_dyn_user(card['desc']['user_profile']),
-        "oid": dyn_oid,
-        "oid_type": oid_type,
+        "user": user,
         "link": f"https://t.bilibili.com/{dyn_id}",
         "created_time": created_time
     }
-    parse_res = await parse_bili_dyn_content(dyn_typ, card["card"])
+    orig = None
+    if(dyn_typ == "DYNAMIC_TYPE_FORWARD"):
+        orig = card['orig']
+    parse_res = await parse_bili_dyn_content(dyn_typ, card['modules']['module_dynamic'], orig)
     for key, value in parse_res.items():
         res[key] = value
-    if dyn_typ == 8:
-        res["link"] = f"https://www.bilibili.com/video/{card['desc']['bvid']}" # 视频bv
-    elif dyn_typ == 1:
-        res["retweet"]["created_time"] = card["desc"]["origin"]["timestamp"]
+    if dyn_typ == "DYNAMIC_TYPE_FORWARD":
+        res["retweet"]["created_time"] = orig['orig']['modules']['module_author']['pub_ts']
     return res
 
 async def parse_bili_dyn_cmt(cmt: dict) -> dict:
@@ -204,7 +199,7 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
         "Cookie": bili_cookie
     }
     async with httpx.AsyncClient() as client:
-        res = await client.get('https://api.live.bilibili.com/dynamic_svr/v1/dynamic_svr/dynamic_new?type_list=268435455', headers=headers, timeout=20)
+        res = await client.get('https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all?timezone_offset=-480&type=all', headers=headers, timeout=20)
     res.encoding='utf-8'
     res = res.text
     try:
@@ -222,38 +217,50 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
         else:
             logger.error(f"B站动态请求返回值异常! code:{cards_data['code']} msg:{cards_data['message']}\nraw:{json.dumps(cards_data, ensure_ascii=False)}")
         return dyn_list
-    cards_data = cards_data['data']['cards']
+    cards_data = cards_data['data']['items']
     now_dyn_time_dict = dict()
     for dyn_uid in dyn_user_dict:
         now_dyn_time_dict[dyn_uid] = dyn_user_dict[dyn_uid]["last_dyn_time"]
     for card in cards_data:
+        uid = str(card['modules']['module_author']['mid'])
+        if (not uid in dyn_user_dict): # 不是推送的人
+            continue
+        dyn_type = card['type']
+        if (dyn_type in ['DYNAMIC_TYPE_LIVE_RCMD']): # 忽略直播动态
+            continue
         try:
-            if type(card["card"]) == str:
-                card["card"] = json.loads(card["card"])
-            # b站bug: user_profile中的头像可能为旧头像
-            if card["card"].get("user",{}).get("head_url"):
-                card['desc']['user_profile']['info']['face'] = card["card"]["user"]["head_url"]
-            
-            user = parse_dyn_user(card['desc']['user_profile'])
-            uid = user['uid']
-            created_time = int(card['desc']['timestamp'])
+            # if type(card["card"]) == str:
+            #     card["card"] = json.loads(card["card"])
+            # # b站bug: user_profile中的头像可能为旧头像
+            # if card["card"].get("user",{}).get("head_url"):
+            #     card['desc']['user_profile']['info']['face'] = card["card"]["user"]["head_url"]
+
+            # 尝试获取完整用户信息
+            # user_info = await get_user_info(bili_ua, bili_cookie, uid)
+            # await asyncio.sleep(3 + random.random()*3)
+            # if(user_info):
+            #     user = parse_dyn_user(user_info)
+            # else:
+            # 无sign
+            user = parse_dyn_user(card['modules']['module_author'])
+            created_time = int(card['modules']['module_author']['pub_ts'])
         except:
             logger.info(f"一条B站动态用户解析错误，可能不是动态消息，已跳过")
             logger.debug(f"B站动态用户解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")
             continue
-        if (not uid in dyn_user_dict): # 不是推送的人
-            continue
+
         # 更新信息
-        if(detail_enable):
-            update_user(dyn_user_dict[uid], "bili_dyn", user, dyn_list)
-            dyn_user_dict[uid]["update_time"] = int(datetime.now().timestamp())
+        # 由于该接口不返回完整用户信息，不在此处更新
+        # if(detail_enable):
+        #     update_user(dyn_user_dict[uid], "bili_dyn", user, dyn_list)
+        #     dyn_user_dict[uid]["update_time"] = int(datetime.now().timestamp())
         if (not dyn_user_dict[uid]["last_dyn_time"] < created_time):# 不是新动态
             continue
         # 以下是处理新动态的内容
         if now_dyn_time_dict[uid] < created_time:
             now_dyn_time_dict[uid] = created_time
         try:
-            dyn = await parse_bili_dyn(card)
+            dyn = await parse_bili_dyn(card, user)
         except:
             logger.info(f"一条B站动态解析错误，可能不是动态消息，已跳过")
             logger.debug(f"B站动态解析出错！错误信息：\n{traceback.format_exc()}\n原始动态：{card}")

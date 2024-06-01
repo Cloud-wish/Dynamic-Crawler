@@ -4,6 +4,7 @@ import httpx
 from http.cookiejar import CookieJar
 from functools import partial
 from typing import Any
+from .config import get_value
 
 def cookie_str_to_dict(cookie_str: str):
     cookies_list = cookie_str.split(";")
@@ -25,12 +26,11 @@ def cookiejar_to_dict(cookiejar: CookieJar):
 
 class Network:
     def __init__(self, cookie_str: str = None, ua_str: str = None) -> None:
-        self._client: httpx.AsyncClient = httpx.AsyncClient()
+        self._client: httpx.AsyncClient = httpx.AsyncClient(proxies = get_value("network", "proxy"))
         if not cookie_str is None:
             self.set_cookie(cookie_str)
         if not ua_str is None:
             self.set_ua(ua_str)
-        pass
         self._save_cookie_func = None
 
     def __del__(self):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import asyncio
+import signal
 import jsons
 import threading
 import queue
@@ -324,7 +325,13 @@ async def cleanup_tasks(app):
         ws_server.close()
         logger.info("Websocket服务已关闭")
 
+def exit_handler(signum, frame):
+    logger.info("Crawler退出")
+    exit(0)
+
 def main():
+    signal.signal(signal.SIGINT, exit_handler)
+    signal.signal(signal.SIGTERM, exit_handler)
     load_config()
     global logger
     logger = init_logger()
@@ -336,7 +343,7 @@ def main():
     app.add_routes(routes)
     app.on_startup.append(start_tasks)
     app.on_cleanup.append(cleanup_tasks)
-    web.run_app(app, host=config_dict["server"]["host"], port=config_dict["server"]["port"])
+    web.run_app(app, host=config_dict["server"]["host"], port=config_dict["server"]["port"], handle_signals=False)
 
 if __name__ == "__main__":
     main()

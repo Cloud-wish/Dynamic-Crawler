@@ -137,7 +137,7 @@ async def parse_bili_dyn_content(dyn_typ: str, content: dict, orig: dict = None)
             res["retweet"] = await parse_bili_dyn_content(orig_typ, orig["modules"]["module_dynamic"])
         res["retweet"]["dyn_type"] = orig_typ
         res["retweet"]["is_retweet"] = True
-        res["retweet"]["user"] = parse_dyn_user(content['orig']['modules']['module_author'])
+        res["retweet"]["user"] = parse_dyn_user(orig['modules']['module_author'])
     return res
 
 async def parse_bili_dyn(card: dict, user: dict) -> dict:

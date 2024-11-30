@@ -15,7 +15,7 @@ from util.logger import init_logger
 
 record_path = os.path.join(os.path.dirname(__file__), "record.json")
 live_record_dict = None
-unknown_uid_set = set()
+status_unknown_uid_dict = {}
 logger = init_logger()
 
 def link_process(link: str) -> str:
@@ -92,19 +92,23 @@ async def get_live(uid_list: list[str]):
         if not live_uid in status_dict: # 结果中无对应UID
             if not live_uid in live_user_dict or not "user" in live_user_dict[live_uid]:
                 continue
+            if not live_uid in status_unknown_uid_dict:
+                status_unknown_uid_dict[live_uid] = {"count": 1}
             else:
-                user = copy.deepcopy(live_user_dict[live_uid]["user"])
-                user["uid"] = live_uid # 记录中无UID, 需要补充
+                status_unknown_uid_dict[live_uid]["count"] += 1
+            # 未查询到该用户直播状态, 暂时使用上次的直播状态
+            user = copy.deepcopy(live_user_dict[live_uid]["user"])
+            user["uid"] = live_uid # 记录中无UID, 需要补充
+            if status_unknown_uid_dict[live_uid]["count"] > 3:
+                logger.info(f"UID:{live_uid}的用户长时间无法查询到直播信息, 可能是未开通直播或直播间被封禁, 状态设置为下播")
                 if user.get("status", "0") == "1":
                     user["status"] = "0" # 设置为下播
-            if not live_uid in unknown_uid_set:
-                unknown_uid_set.add(live_uid)
-                logger.info(f"UID:{live_uid}的用户无法查询到直播信息, 可能是未开通直播或直播间被封禁, 状态设置为下播")
         else:
             user = parse_live_user(status_dict[live_uid])
-            if live_uid in unknown_uid_set:
-                unknown_uid_set.remove(live_uid)
-                logger.info(f"UID:{live_uid}的用户直播信息查询恢复正常")
+            if live_uid in status_unknown_uid_dict:
+                if status_unknown_uid_dict[live_uid]["count"] > 3:
+                    logger.info(f"UID:{live_uid}的用户直播信息查询恢复正常")
+                del status_unknown_uid_dict[live_uid]
         update_user(live_user_dict[live_uid], "bili_live", user, live_list)
     save_live_record()
     return live_list

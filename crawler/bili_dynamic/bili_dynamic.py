@@ -161,7 +161,7 @@ async def parse_bili_dyn(card: dict, user: dict) -> dict:
     for key, value in parse_res.items():
         res[key] = value
     if dyn_typ == "DYNAMIC_TYPE_FORWARD":
-        res["retweet"]["created_time"] = orig['orig']['modules']['module_author']['pub_ts']
+        res["retweet"]["created_time"] = orig['modules']['module_author']['pub_ts']
     return res
 
 async def parse_bili_dyn_cmt(cmt: dict) -> dict:
@@ -280,6 +280,7 @@ async def get_bili_users_detail(bili_ua: str, bili_cookie: str, uid_list: list[s
         return msg_list
     headers = {
         "User-Agent": bili_ua,
+        "Cookie": bili_cookie
     }
     async with httpx.AsyncClient() as client:
         res = await client.get(f'https://api.vc.bilibili.com/account/v1/user/cards?uids={",".join(uid_list)}', headers=headers, timeout=20)
@@ -288,7 +289,7 @@ async def get_bili_users_detail(bili_ua: str, bili_cookie: str, uid_list: list[s
     try:
         data_list = json.loads(res)
         data_list = data_list["data"]
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, KeyError):
         logger.error(f"B站批量查询用户详情解析出错!\nUID列表:{uid_list}\n返回值如下:\n{res}")
         return msg_list
     for data in data_list:

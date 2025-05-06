@@ -92,11 +92,19 @@ def get_dyn_oid_type(card: dict) -> tuple(int, CommentResourceType):
 async def parse_bili_dyn_content(dyn_typ: str, content: dict, orig: dict = None) -> dict:
     res = dict()
     if dyn_typ == "DYNAMIC_TYPE_DRAW":  # 带图片动态
-        dyn_text = content['desc']['text']
-        pic_list = content['major']['draw']['items']
-        pic_src_list = list()
-        for pic in pic_list:
-            pic_src_list.append(pic['src'])
+        if content['desc'] is None:
+            # 新动态类型
+            dyn_text = content['major']['opus']['summary']['text']
+            pic_list = content['major']['opus']['pics']
+            pic_src_list = list()
+            for pic in pic_list:
+                pic_src_list.append(pic['url'])
+        else:
+            dyn_text = content['desc']['text']
+            pic_list = content['major']['draw']['items']
+            pic_src_list = list()
+            for pic in pic_list:
+                pic_src_list.append(pic['src'])
         res = {
             "text": dyn_text,
             "pics": pic_src_list
@@ -196,10 +204,20 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
         return dyn_list
     headers = {
         "User-Agent": bili_ua,
-        "Cookie": bili_cookie
+        "Cookie": bili_cookie,
+    }
+    params = {
+        "type": "all",
+        "timezone_offset": -480,
+        "platform": "web",
+        "page": 1,
+        "features": "itemOpusStyle,opusBigCover,onlyfansVote,endFooterHidden,decorationCard,onlyfansAssetsV2,ugcDelete",
+        "web_location": "333.1368",
+        "x-bili-device-req-json": '{"platform":"web","device":"pc"}',
+        "x-bili-web-req-json": '{"spm_id":"333.1368"}',
     }
     async with httpx.AsyncClient() as client:
-        res = await client.get('https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all?timezone_offset=-480&type=all', headers=headers, timeout=20)
+        res = await client.get('https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/all', headers=headers, params=params, timeout=20)
     res.encoding='utf-8'
     res = res.text
     try:
@@ -218,6 +236,8 @@ async def get_dynamic(bili_ua: str, bili_cookie: str, detail_enable: bool, comme
             logger.error(f"B站动态请求返回值异常! code:{cards_data['code']} msg:{cards_data['message']}\nraw:{json.dumps(cards_data, ensure_ascii=False)}")
         return dyn_list
     cards_data = cards_data['data']['items']
+    # with open("bili_dynamic.json", "w", encoding="utf-8") as f:
+    #     f.write(json.dumps(cards_data, ensure_ascii=False, indent=4))
     now_dyn_time_dict = dict()
     for dyn_uid in dyn_user_dict:
         now_dyn_time_dict[dyn_uid] = dyn_user_dict[dyn_uid]["last_dyn_time"]
